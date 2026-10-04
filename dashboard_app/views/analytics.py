@@ -26,6 +26,7 @@ from dashboard_app.views.common import (
     format_number,
     format_percent,
     page_heading,
+    render_rtl_table,
 )
 
 ALL_SECTIONS = "همهٔ بخش‌ها"
@@ -97,12 +98,20 @@ def _show_sample_notice(records: list[dict[str, Any]]) -> None:
 def _style_figure(figure: go.Figure, title: str) -> go.Figure:
     figure.update_layout(
         title=title,
+        title_x=1,
+        title_xanchor="right",
         font={"family": "Tahoma, Arial, sans-serif", "size": 13},
         plot_bgcolor="white",
         paper_bgcolor="white",
         margin={"l": 20, "r": 20, "t": 55, "b": 50},
-        legend={"orientation": "h", "y": 1.12, "x": 1, "xanchor": "right"},
-        xaxis={"tickangle": -25, "gridcolor": "#eef2f1"},
+        legend={
+            "orientation": "h",
+            "y": 1.12,
+            "x": 1,
+            "xanchor": "right",
+            "traceorder": "reversed",
+        },
+        xaxis={"tickangle": -25, "gridcolor": "#eef2f1", "autorange": "reversed"},
         yaxis={"gridcolor": "#eef2f1"},
     )
     return figure
@@ -122,7 +131,13 @@ def _render_charts(
 
     chart_columns = st.columns(2)
     with chart_columns[0]:
-        chart_data = report[["service", "actual_revenue", "budget_revenue"]].copy()
+        chart_data = report[
+            ["section", "service", "actual_revenue", "budget_revenue"]
+        ].copy()
+        chart_data["service_label"] = (
+            chart_data["section"] + " · " + chart_data["service"]
+        )
+        chart_data = chart_data[["service_label", "actual_revenue", "budget_revenue"]]
         chart_data = chart_data.rename(
             columns={
                 "actual_revenue": "درآمد عملکرد",
@@ -130,14 +145,14 @@ def _render_charts(
             }
         )
         chart_long = chart_data.melt(
-            id_vars="service", var_name="شاخص", value_name="میلیون ریال"
+            id_vars="service_label", var_name="شاخص", value_name="میلیون ریال"
         )
         chart_long["میلیون ریال"] = pd.to_numeric(
             chart_long["میلیون ریال"], errors="coerce"
         ).fillna(0)
         figure = px.bar(
             chart_long,
-            x="service",
+            x="service_label",
             y="میلیون ریال",
             color="شاخص",
             barmode="group",
@@ -147,7 +162,13 @@ def _render_charts(
         st.plotly_chart(figure, width="stretch")
 
     with chart_columns[1]:
-        profit_data = report[["service", "actual_profit", "budget_profit"]].copy()
+        profit_data = report[
+            ["section", "service", "actual_profit", "budget_profit"]
+        ].copy()
+        profit_data["service_label"] = (
+            profit_data["section"] + " · " + profit_data["service"]
+        )
+        profit_data = profit_data[["service_label", "actual_profit", "budget_profit"]]
         profit_data = profit_data.rename(
             columns={
                 "actual_profit": "سود عملکرد",
@@ -155,14 +176,14 @@ def _render_charts(
             }
         )
         profit_long = profit_data.melt(
-            id_vars="service", var_name="شاخص", value_name="میلیون ریال"
+            id_vars="service_label", var_name="شاخص", value_name="میلیون ریال"
         )
         profit_long["میلیون ریال"] = pd.to_numeric(
             profit_long["میلیون ریال"], errors="coerce"
         ).fillna(0)
         figure = px.bar(
             profit_long,
-            x="service",
+            x="service_label",
             y="میلیون ریال",
             color="شاخص",
             barmode="group",
@@ -268,7 +289,7 @@ def render_dashboard() -> None:
     _render_charts(report, records, year, months, section, service)
     with st.expander("پیش‌نمایش گزارش", expanded=False):
         display = report_for_display(report)
-        st.dataframe(display, width="stretch", hide_index=True, height=380)
+        render_rtl_table(display, max_height=380)
 
 
 def render_final_report() -> None:
@@ -288,7 +309,7 @@ def render_final_report() -> None:
         return
 
     display = report_for_display(report)
-    st.dataframe(display, width="stretch", hide_index=True, height=600)
+    render_rtl_table(display, max_height=600)
     stem = f"گزارش_لجستیک_{year}_{period.replace(' ', '_')}"
     download_table_buttons(display, stem, "final_report")
     st.caption(

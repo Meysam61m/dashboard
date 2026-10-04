@@ -28,6 +28,7 @@ from dashboard_app.repository import (
 from dashboard_app.views.common import (
     download_table_buttons,
     page_heading,
+    render_rtl_table,
 )
 
 RECORD_DISPLAY = {
@@ -229,7 +230,7 @@ def _records_tab(user: dict[str, str]) -> None:
     df["is_demo"] = df["is_demo"].map({1: "بله — نمونه", 0: "خیر"})
     display_cols = [column for column in RECORD_DISPLAY if column in df.columns]
     display = df[display_cols].rename(columns=RECORD_DISPLAY)
-    st.dataframe(display, width="stretch", hide_index=True, height=500)
+    render_rtl_table(display, max_height=500)
     download_table_buttons(display, "رکوردهای_داشبورد", "records_export")
 
     if user["role"] == "admin":
@@ -303,7 +304,7 @@ def _services_tab(user: dict[str, str]) -> None:
             for column in ("بخش", "شرح خدمت", "واحد سنجش", "وضعیت فعال (۱=بله)")
             if column in service_df
         ]
-        st.dataframe(service_df[visible_columns], width="stretch", hide_index=True)
+        render_rtl_table(service_df[visible_columns], max_height=360)
     else:
         st.info("فهرست خدمات هنوز خالی است.")
 

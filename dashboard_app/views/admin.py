@@ -16,7 +16,7 @@ from dashboard_app.auth import (
 from dashboard_app.config import ROLE_LABELS
 from dashboard_app.database import db_connection, write_audit
 from dashboard_app.repository import database_backup_bytes, fetch_audit_logs
-from dashboard_app.views.common import page_heading
+from dashboard_app.views.common import page_heading, render_rtl_table
 
 
 def render_user_admin(actor: dict[str, str]) -> None:
@@ -99,7 +99,7 @@ def render_user_admin(actor: dict[str, str]) -> None:
             if column in table
         ]
         st.subheader("حساب‌های موجود")
-        st.dataframe(table[visible], width="stretch", hide_index=True)
+        render_rtl_table(table[visible], max_height=420)
 
         options = [
             row["username"] for row in users if row["username"] != actor["username"]
@@ -234,4 +234,4 @@ def render_security_page(user: dict[str, str]) -> None:
                 "created_at": "زمان (UTC)",
             }
         )
-        st.dataframe(audit, width="stretch", hide_index=True, height=420)
+        render_rtl_table(audit, max_height=420)
