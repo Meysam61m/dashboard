@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.env
+
+# Local application data (never commit the live database)
+instance/
+*.sqlite
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.db
+*.db-wal
+*.db-shm
+backups/
+
+# Local download bundle (kept out of the source PR)
+/logistics_finance_dashboard.zip
+
+# Streamlit secrets
+.streamlit/secrets.toml
+
+# Test/build artifacts
+.coverage
+.pytest_cache/
+.ruff_cache/
