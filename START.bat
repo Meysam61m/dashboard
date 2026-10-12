@@ -61,16 +61,33 @@ echo [3/4] پیش‌نیازها نصب شدند.
 echo.
 
 REM ---------------- [4/4] اجرای برنامه ----------------
+set "LANIP="
+for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "(Get-NetIPAddress -AddressFamily IPv4 ^| Where-Object {$_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254*'} ^| Select-Object -First 1 -ExpandProperty IPAddress)"`) do set "LANIP=%%I"
+if not defined LANIP set "LANIP=IP-کامپیوتر-خودتان"
+
 echo [4/4] در حال اجرای برنامه ...
 echo.
-echo    برنامه اجرا می‌شود و مرورگر به‌صورت خودکار باز خواهد شد.
-echo    برای استفاده دیگران از شبکه داخلی:
-echo          http://IP-این-کامپیوتر:8501
+echo    ================================================================
+echo    آدرس‌های دسترسی (این‌ها را در مرورگر باز کنید):
+echo.
+echo      ▶ روی همین کامپیوتر:      http://localhost:8501
+echo.
+echo      ▶ روی موبایل/سیستم دیگر:  http://%LANIP%:8501
+echo.
+echo    توجه: آدرس 0.0.0.0 قابل بازکردن نیست و فقط محل گوش دادن
+echo    برنامه است؛ از آدرس‌های بالا استفاده کنید.
+echo    ================================================================
+echo.
+echo    مرورگر به‌صورت خودکار باز می‌شود (اگر باز نشد، آدرس بالا را
+echo    دستی باز کنید).
+echo    اگر از سیستم دیگر وصل نشدید، در پیام فایروال ویندوز گزینه
+echo    "Private networks" را برای Python مجاز کنید.
 echo.
 echo    برای بستن برنامه، این پنجره را ببندید یا Ctrl+C بزنید.
 echo ================================================================
 echo.
-".venv\Scripts\python.exe" -m streamlit run app.py --server.address 0.0.0.0 --server.port 8501 --server.headless false --browser.gatherUsageStats false
+start "" http://localhost:8501
+".venv\Scripts\python.exe" -m streamlit run app.py --server.address 0.0.0.0 --server.port 8501 --server.headless true --browser.gatherUsageStats false
 echo.
 echo برنامه بسته شد.
 pause
