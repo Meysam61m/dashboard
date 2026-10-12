@@ -28,3 +28,4 @@ backups/
 .pytest_cache/
 .ruff_cache/
 .work/
+/senad-karperdazi*.zip
