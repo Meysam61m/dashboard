@@ -27,3 +27,4 @@ backups/
 .coverage
 .pytest_cache/
 .ruff_cache/
+.work/
