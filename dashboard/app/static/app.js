@@ -449,12 +449,39 @@ async function showDiag() {
         ? `مدل ${esc(d.real_test.model)} در ${esc(faVer(d.real_test.seconds))} ثانیه پاسخ داد`
         : esc(d.real_test?.text || 'انجام نشد')}</span>
     </div>
+    <div class="diag-row" style="margin-top:6px">
+      <span class="ic">${(d.loaded||[]).length ? '💾' : '○'}</span>
+      <span class="nm">در حافظه</span>
+      <span class="dt">${(d.loaded||[]).length
+        ? d.loaded.map(m => `${esc(m.name)}${m.size_gb ? ' (' + esc(faVer(m.size_gb)) + ' گیگ)' : ''}`).join('، ')
+        : 'هیچ مدلی بارگذاری نشده — اولین تحلیل کندتر خواهد بود'}
+        <button id="warmBtn" style="font-family:inherit;font-size:11px;margin-inline-start:8px;background:#2A7F86;color:#fff;border:0;border-radius:6px;padding:3px 9px;cursor:pointer">بارگذاری مدل</button>
+      </span>
+    </div>
     <div style="margin-top:12px;font-size:11.5px;color:var(--muted)">
       این گزارش را می‌توانید عیناً برای بررسی بفرستید.
       <button id="diagCopy" style="font-family:inherit;font-size:11px;background:none;border:0;color:#2A7F86;cursor:pointer;text-decoration:underline">کپی متن</button>
     </div>`;
   document.querySelector('.content')?.prepend(panel);
   panel.querySelector('.diag-close').onclick = () => panel.remove();
+  const wb = panel.querySelector('#warmBtn');
+  if (wb) wb.onclick = async () => {
+    wb.disabled = true; wb.textContent = 'در حال بارگذاری…';
+    const t0 = Date.now();
+    const iv = setInterval(() => { wb.textContent = 'بارگذاری ' + fa(Math.floor((Date.now() - t0) / 1000)) + ' ث'; }, 500);
+    try {
+      const r = await (await fetch('/api/ai/warmup', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: document.querySelector('#aiModel')?.value || null })
+      })).json();
+      clearInterval(iv);
+      wb.textContent = r.ok ? `آماده (${faVer(r.seconds)} ث)` : 'ناموفق';
+      if (r.ok) toast(`مدل ${r.model} در حافظه بارگذاری شد`);
+      else toast(plainErr(r.error), true);
+    } catch (e) {
+      clearInterval(iv); wb.textContent = 'ناموفق'; toast('خطا در بارگذاری', true);
+    }
+  };
   panel.querySelector('#diagCopy').onclick = async () => {
     const txt = `نسخهٔ داشبورد: ${d.app_version} (${d.app_build})
 پایتون: ${d.python} | ${d.platform}

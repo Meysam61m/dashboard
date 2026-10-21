@@ -88,6 +88,20 @@ def ai_diag():
     return ai.diag()
 
 
+@app.get("/api/ai/ps")
+def ai_ps():
+    return {"loaded": ai.ps()}
+
+
+class WarmReq(BaseModel):
+    model: str | None = None
+
+
+@app.post("/api/ai/warmup")
+def ai_warmup(req: WarmReq):
+    return ai.warmup(req.model)
+
+
 class AnalyzeReq(BaseModel):
     page: str = "overview"
     branch: str = "مجتمع"

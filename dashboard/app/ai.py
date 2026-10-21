@@ -14,7 +14,7 @@ from datetime import datetime
 import httpx
 
 from . import catalog
-from .config import (APP_VERSION, APP_BUILD, AI_MAX_TOKENS, AI_TEMPERATURE, MODEL_ANALYSIS, MODEL_CHAT,
+from .config import (APP_VERSION, APP_BUILD, AI_MAX_TOKENS, AI_TEMPERATURE, OLLAMA_KEEP_ALIVE, MODEL_ANALYSIS, MODEL_CHAT,
                      MODEL_DEEP, OLLAMA_HOST, OLLAMA_TIMEOUT)
 
 PROMPT_VERSION = "v1.3"
@@ -237,6 +237,44 @@ def health() -> dict:
     }
 
 
+def ps() -> list[dict]:
+    """مدل‌هایی که همین حالا در حافظه بارگذاری شده‌اند."""
+    try:
+        r = httpx.get(f"{host()}/api/ps", timeout=5.0, trust_env=False)
+        r.raise_for_status()
+        out = []
+        for m in r.json().get("models", []):
+            size = m.get("size") or 0
+            out.append({
+                "name": m.get("name") or m.get("model"),
+                "size_gb": round(size / (1024 ** 3), 1) if size else None,
+                "until": m.get("expires_at"),
+            })
+        return out
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def warmup(model: str | None = None) -> dict:
+    """مدل را در حافظه بارگذاری می‌کند تا اولین تحلیل معطل نماند."""
+    want = model or MODEL_ANALYSIS
+    m, _ = pick_model(want)
+    t0 = time.time()
+    try:
+        with httpx.Client(timeout=OLLAMA_TIMEOUT, trust_env=False) as c:
+            r = c.post(f"{host()}/api/chat", json={
+                "model": m, "stream": False, "keep_alive": OLLAMA_KEEP_ALIVE,
+                "messages": [{"role": "user", "content": "سلام"}],
+                "options": {"num_predict": 1, "num_ctx": 512},
+            })
+            if r.status_code >= 400:
+                return {"ok": False, "model": m, "error": _ollama_error(r)}
+        return {"ok": True, "model": m, "seconds": round(time.time() - t0, 1),
+                "keep_alive": OLLAMA_KEEP_ALIVE, "loaded": ps()}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "model": m, "error": f"{type(e).__name__}: {e}"}
+
+
 def diag() -> dict:
     """گزارش کامل وضعیت — همان چیزی که diagnose_ollama.py می‌گوید، از داخل برنامه."""
     import platform
@@ -281,11 +319,9 @@ def diag() -> dict:
             dt = time.time() - t0
             real = {"ok": True, "model": model, "seconds": round(dt, 1),
                     "text": (out or "").strip()[:40] or "(خالی)"}
-            add("تولید متن", True, f"مدل {model} در {dt:.1f} ثانیه پاسخ داد")
         except Exception as e:  # noqa: BLE001
             msg = str(e)
             real = {"ok": False, "text": msg}
-            add("تولید متن", False, msg[:160])
 
     return {
         "app_version": APP_VERSION, "app_build": APP_BUILD,
@@ -294,6 +330,8 @@ def diag() -> dict:
                    ("online", "host", "host_configured", "switched", "latency_ms",
                     "error", "error_text", "models", "installed", "remote_backend")},
         "checks": checks, "real_test": real,
+        "loaded": ps(),
+        "keep_alive": OLLAMA_KEEP_ALIVE,
     }
 
 
@@ -303,6 +341,7 @@ def _chat(model: str, messages: list[dict], max_tokens: int = AI_MAX_TOKENS) -> 
         "messages": messages,
         "stream": False,
         "format": "json",
+        "keep_alive": OLLAMA_KEEP_ALIVE,
         "options": {
             "temperature": AI_TEMPERATURE,
             "num_predict": max_tokens,
@@ -343,7 +382,8 @@ def _generate(c, model: str, messages: list[dict], max_tokens: int, options: dic
     usr_part = "\n\n".join(m["content"] for m in messages if m["role"] == "user")
     r = c.post(f"{host()}/api/generate", json={
         "model": model, "prompt": usr_part, "system": sys_part,
-        "stream": False, "format": "json", "options": options,
+        "stream": False, "format": "json", "keep_alive": OLLAMA_KEEP_ALIVE,
+        "options": options,
     })
     if r.status_code >= 400:
         raise RuntimeError(f"Ollama کد {r.status_code} داد: {_ollama_error(r)}")
