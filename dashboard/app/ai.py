@@ -122,43 +122,94 @@ def validate_numbers(texts: list[str], allowed: set[str], allowed_values=None) -
 
 
 # ── اتصال
+# نکتهٔ مهم: trust_env=False
+# بدون این گزینه، httpx متغیرهای HTTP_PROXY / ALL_PROXY سیستم را رعایت می‌کند و
+# درخواست به 127.0.0.1 را هم از پروکسی عبور می‌دهد — همان چیزی که باعث می‌شود
+# مرورگر Ollama را ببیند ولی برنامه نبیند.
 def host() -> str:
-    return OLLAMA_HOST.rstrip("/")
+    return (_ACTIVE_HOST or OLLAMA_HOST).rstrip("/")
+
+
+_ACTIVE_HOST: str | None = None
+_last_probe: dict = {}
+
+
+def _candidates() -> list[str]:
+    """آدرس‌های ممکن به‌ترتیب اولویت — برای عبور از تفاوت localhost/127.0.0.1/IPv6."""
+    base = OLLAMA_HOST.rstrip("/")
+    out = [base]
+    for alt in ("http://127.0.0.1:11434", "http://localhost:11434",
+                "http://[::1]:11434", "http://host.docker.internal:11434"):
+        if alt.rstrip("/") != base and alt not in out:
+            out.append(alt)
+    return out
+
+
+def _has_model(names: list[str], want: str) -> bool:
+    """تطبیق دقیق. اگر نسخهٔ درخواستی برچسب داشته باشد، همان برچسب لازم است
+    (qwen3.5:4b نباید جای qwen3.5:9b پذیرفته شود)."""
+    if want in names:
+        return True
+    if ":" not in want:
+        return any(n.split(":")[0] == want for n in names)
+    return False
+
+
+def _probe(url: str) -> tuple[bool, int, list[str], str]:
+    try:
+        t0 = time.time()
+        r = httpx.get(f"{url.rstrip('/')}/api/tags", timeout=4.0, trust_env=False)
+        r.raise_for_status()
+        ms = int((time.time() - t0) * 1000)
+        models = [m.get("name") or m.get("model") for m in r.json().get("models", [])]
+        return True, ms, [m for m in models if m], ""
+    except Exception as e:  # noqa: BLE001
+        return False, 0, [], f"{type(e).__name__}: {e}"
+
+
+def _classify(err: str) -> str:
+    e = err.lower()
+    if "proxy" in e or "407" in e:
+        return "پروکسی سیستم جلوی درخواست را گرفته است (trust_env باید خاموش باشد)."
+    if "refused" in e or "connect" in e:
+        return ("سرویس Ollama روی این نشانی گوش نمی‌دهد. "
+                "یا Ollama اجرا نشده، یا فقط روی loopback دیگری گوش می‌دهد.")
+    if "timeout" in e or "timed out" in e:
+        return "پاسخی نیامد (timeout). احتمالاً Ollama مشغول بارگذاری مدل است."
+    if "name or service" in e or "getaddrinfo" in e:
+        return "نشانی قابل تبدیل به IP نبود — مقدار OLLAMA_HOST را بررسی کنید."
+    return "خطای نامشخص در تماس با Ollama."
 
 
 def health() -> dict:
-    try:
-        t0 = time.time()
-        r = httpx.get(f"{host()}/api/tags", timeout=4.0)
-        r.raise_for_status()
-        ms = time.time() - t0
-        models = [m.get("name") or m.get("model") for m in r.json().get("models", [])]
-        names = [m for m in models if m]
-        return {
-            "online": True,
-            "latency_ms": int(ms * 1000),
-            "host": host(),
-            "models": names,
-            "configured": {
-                "chat": MODEL_CHAT, "analysis": MODEL_ANALYSIS, "deep": MODEL_DEEP,
-            },
-            "installed": {
-                k: any(n == v or n.startswith(v.split(":")[0] + ":") for n in names)
-                for k, v in {"chat": MODEL_CHAT, "analysis": MODEL_ANALYSIS,
-                             "deep": MODEL_DEEP}.items()
-            },
-            "engine": "ollama",
-        }
-    except Exception as e:  # noqa: BLE001
-        return {
-            "online": False,
-            "host": host(),
-            "error": f"{type(e).__name__}: {e}",
-            "models": [],
-            "configured": {"chat": MODEL_CHAT, "analysis": MODEL_ANALYSIS, "deep": MODEL_DEEP},
-            "installed": {"chat": False, "analysis": False, "deep": False},
-            "engine": "ollama",
-        }
+    global _ACTIVE_HOST, _last_probe
+    conf = {"chat": MODEL_CHAT, "analysis": MODEL_ANALYSIS, "deep": MODEL_DEEP}
+    tried = []
+    first_err = ""
+    for i, url in enumerate(_candidates()):
+        if i > 0 and _ACTIVE_HOST:      # اگر قبلاً آدرسی جواب داده، دوباره همه را نمی‌گردیم
+            break
+        ok, ms, names, err = _probe(url)
+        tried.append({"host": url, "ok": ok, "error": err})
+        if ok:
+            _ACTIVE_HOST = url
+            return {
+                "online": True, "latency_ms": ms, "host": url,
+                "host_configured": OLLAMA_HOST.rstrip("/"),
+                "switched": url.rstrip("/") != OLLAMA_HOST.rstrip("/"),
+                "models": names, "configured": conf,
+                        "installed": {k: _has_model(names, v) for k, v in conf.items()},
+                "engine": "ollama", "tried": tried,
+            }
+        if not first_err:
+            first_err = err
+    _ACTIVE_HOST = None
+    return {
+        "online": False, "host": OLLAMA_HOST.rstrip("/"), "error": first_err,
+        "error_text": _classify(first_err), "models": [], "configured": conf,
+        "installed": {"chat": False, "analysis": False, "deep": False},
+        "engine": "ollama", "tried": tried,
+    }
 
 
 def _chat(model: str, messages: list[dict], max_tokens: int = AI_MAX_TOKENS) -> str:
@@ -174,7 +225,7 @@ def _chat(model: str, messages: list[dict], max_tokens: int = AI_MAX_TOKENS) -> 
             "top_p": 0.9,
         },
     }
-    with httpx.Client(timeout=OLLAMA_TIMEOUT) as c:
+    with httpx.Client(timeout=OLLAMA_TIMEOUT, trust_env=False) as c:
         r = c.post(f"{host()}/api/chat", json=body)
         r.raise_for_status()
         data = r.json()

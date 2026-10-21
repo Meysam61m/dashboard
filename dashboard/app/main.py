@@ -5,7 +5,7 @@ import io
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Request, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -65,8 +65,19 @@ def dashboard(page: str = "overview", branch: str = "مجتمع",
 
 # ── هوش مصنوعی
 @app.get("/api/ai/health")
-def ai_health():
-    return ai.health()
+def ai_health(request: Request):
+    out = ai.health()
+    # تشخیص اینکه رابط کاربری از رایانهٔ دیگری باز شده باشد
+    # (مثلاً پیش‌نمایش ابری) — در آن حالت Ollama روی «همان» رایانه در دسترس نیست
+    host_hdr = (request.headers.get("host") or "").split(":")[0].lower()
+    local_names = {"localhost", "127.0.0.1", "0.0.0.0", "::1", ""}
+    out["remote_backend"] = host_hdr not in local_names and not host_hdr.endswith(".local")
+    out["host_header"] = host_hdr
+    if not out["online"] and out["remote_backend"]:
+        out["error_text"] = ("این صفحه از رایانهٔ دیگری باز شده و برنامهٔ سمت‌سرور "
+                             "به Ollama روی رایانهٔ شما دسترسی ندارد. "
+                             "داشبورد باید روی همان رایانه‌ای اجرا شود که Ollama روی آن است.")
+    return out
 
 
 class AnalyzeReq(BaseModel):

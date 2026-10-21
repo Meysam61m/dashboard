@@ -89,7 +89,10 @@ async function checkAI() {
     if (h.online) {
       st.innerHTML = `<span class="dot on"></span>متصل به Ollama<br><span style="opacity:.6;font-size:10.5px">${esc(h.host)}</span>`;
     } else {
-      st.innerHTML = `<span class="dot off"></span>Ollama در دسترس نیست<br><span style="opacity:.6;font-size:10.5px">${esc(h.host)}</span>`;
+      const why = h.remote_backend
+        ? 'روی رایانهٔ Ollama اجرا نشده'
+        : (h.error_text || 'سرویس وصل نشد');
+      st.innerHTML = `<span class="dot off"></span>Ollama در دسترس نیست<br><span style="opacity:.6;font-size:10.5px">${esc(why)}</span>`;
     }
   } catch (e) {
     st.innerHTML = `<span class="dot off"></span>وضعیت نامشخص`;
@@ -355,7 +358,8 @@ function aiPanel(data) {
     </div>
     <div id="aiBanner">${online
       ? `<div class="banner ok">متصل به Ollama روی <b>${esc(h.host)}</b> — تحلیل از روی اعداد همین صفحه و بدون تماس با اینترنت تولید می‌شود.</div>`
-      : `<div class="banner warn"><b>Ollama در دسترس نیست</b> (${esc(h.host)}). داشبورد و همهٔ شاخص‌ها کار می‌کنند؛ با کلیک روی «تولید تحلیل» یک تحلیل قاعده‌محور (بدون مدل زبانی) نمایش داده می‌شود.</div>`}</div>
+      : `<div class="banner warn"><b>Ollama در دسترس نیست</b> (${esc(h.host)})${h.error_text ? ' — ' + esc(h.error_text) : ''}.
+         <br><span style="opacity:.8">داشبورد و همهٔ شاخص‌ها کار می‌کنند؛ دکمهٔ «تولید تحلیل» یک تحلیل قاعده‌محور (بدون مدل زبانی) می‌سازد.</span></div>`}</div>
     <div id="aiBody" class="ai-body"><div class="sub">برای دیدن تحلیل، دکمهٔ «تولید تحلیل» را بزنید. روی CPU ممکن است تا چند دقیقه طول بکشد؛ نتیجه ذخیره می‌شود.</div></div>`;
   setTimeout(() => {
     const b = p.querySelector('#aiRun');
