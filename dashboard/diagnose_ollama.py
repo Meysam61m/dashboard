@@ -45,16 +45,15 @@ def port_open(host: str, port: int = 11434, timeout: float = 2.0) -> bool:
 def http_probe(url: str):
     """آزمون HTTP با trust_env=False تا پروکسی سیستم دخالت نکند."""
     try:
-        import httpx
-    except ImportError:
-        return None, "بستهٔ httpx نصب نیست — اجرا کنید: pip install httpx"
-    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from app.ai import _http, _json_or_none
         t0 = time.time()
-        r = httpx.get(f"{url}/api/tags", timeout=5.0, trust_env=False)
+        code, txt = _http(f"{url}/api/tags", timeout=5.0)
         ms = int((time.time() - t0) * 1000)
-        if r.status_code != 200:
-            return None, f"HTTP {r.status_code}"
-        models = [m.get("name") or m.get("model") for m in r.json().get("models", [])]
+        if code != 200:
+            return None, f"HTTP {code}"
+        models = [m.get("name") or m.get("model")
+                  for m in (_json_or_none(txt) or {}).get("models", [])]
         return (ms, [m for m in models if m]), None
     except Exception as e:  # noqa: BLE001
         return None, f"{type(e).__name__}: {e}"
@@ -68,9 +67,9 @@ def http_probe_via_proxy(url: str):
     if not proxy:
         return None, "پروکسی تنظیم نشده"
     try:
-        import httpx
-        r = httpx.get(f"{url}/api/tags", timeout=5.0, trust_env=True)
-        return ("متصل شد" if r.status_code == 200 else f"HTTP {r.status_code}"), None
+        import urllib.request
+        r = urllib.request.urlopen(f"{url}/api/tags", timeout=5.0)
+        return ("متصل شد" if r.status == 200 else f"HTTP {r.status}"), None
     except Exception as e:  # noqa: BLE001
         return None, f"{type(e).__name__}"
 
@@ -164,26 +163,25 @@ def main() -> int:
         bad("مدلی برای آزمون نیست")
     else:
         try:
-            import httpx
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from app.ai import _http, _json_or_none
             print(f"  در حال پرسش از «{test_model}» (تا ۹۰ ثانیه)…")
             t0 = time.time()
-            r = httpx.post(f"{working}/api/chat", timeout=90.0, trust_env=False, json={
+            code, txt = _http(f"{working}/api/chat", {
                 "model": test_model, "stream": False,
                 "messages": [{"role": "user", "content": "فقط بنویس: آماده"}],
                 "options": {"num_predict": 8, "num_ctx": 512},
-            })
+            }, timeout=90.0)
             dt = time.time() - t0
-            if r.status_code == 200:
-                txt = (r.json().get("message") or {}).get("content", "").strip()
-                ok(f"پاسخ در {dt:.1f} ثانیه: «{txt[:40]}»")
-                tok = r.json().get("eval_count")
+            data = _json_or_none(txt) or {}
+            if code == 200:
+                out = (data.get("message") or {}).get("content", "").strip()
+                ok(f"پاسخ در {dt:.1f} ثانیه: «{out[:40]}»")
+                tok = data.get("eval_count")
                 if tok and dt > 0:
                     ok(f"سرعت تقریبی: {tok / dt:.1f} توکن بر ثانیه")
-            elif r.status_code == 404:
-                try:
-                    msg = r.json().get("error", "")
-                except Exception:  # noqa: BLE001
-                    msg = r.text[:100]
+            elif code == 404:
+                msg = data.get("error", "") if data else txt[:100]
                 bad(f"کد ۴۰۴ — {msg or 'مسیر /api/chat یافت نشد'}")
                 if "model" in str(msg).lower():
                     print("     یعنی: این مدل نصب نیست → ollama pull " + test_model)
@@ -191,7 +189,7 @@ def main() -> int:
                     print("     یعنی: نسخهٔ Ollama قدیمی است و /api/chat ندارد.")
                     print("     راه‌حل: Ollama را به‌روزرسانی کنید (ollama.com/download)")
             else:
-                bad(f"کد {r.status_code}: {r.text[:150]}")
+                bad(f"کد {code}: {txt[:150]}")
         except Exception as e:  # noqa: BLE001
             bad(f"{type(e).__name__}: {str(e)[:120]}")
 

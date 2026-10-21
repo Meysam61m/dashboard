@@ -11,7 +11,10 @@ import re
 import time
 from datetime import datetime
 
-import httpx
+import json as _j
+import socket as _socket
+import urllib.error as _urlerr
+import urllib.request as _urlreq
 
 from . import catalog
 from .config import (APP_VERSION, APP_BUILD, AI_MAX_TOKENS, AI_TEMPERATURE, OLLAMA_KEEP_ALIVE, MODEL_ANALYSIS, MODEL_CHAT,
@@ -121,11 +124,48 @@ def validate_numbers(texts: list[str], allowed: set[str], allowed_values=None) -
     return {"checked": len(found) + len(bad), "accepted": len(found), "unknown": sorted(bad)}
 
 
+# ── لایهٔ HTTP بدون وابستگی خارجی
+# از کتابخانهٔ استاندارد پایتون استفاده می‌کنیم تا نصب برنامه به httpx
+# نیاز نداشته باشد. ProxyHandler({}) معادل trust_env=False است:
+# پروکسی سیستم نادیده گرفته می‌شود، چون درخواست ما به localhost است.
+_OPENER = _urlreq.build_opener(_urlreq.ProxyHandler({}))
+
+
+def _http(url: str, body: dict | None = None, timeout: float = 30.0):
+    """درخواست JSON. خروجی: (کد وضعیت، متن پاسخ)"""
+    data = None
+    headers = {"Accept": "application/json"}
+    if body is not None:
+        data = _j.dumps(body, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json; charset=utf-8"
+    req = _urlreq.Request(url, data=data, headers=headers,
+                          method="POST" if body is not None else "GET")
+    try:
+        with _OPENER.open(req, timeout=timeout) as r:
+            return getattr(r, "status", 200), r.read().decode("utf-8", "replace")
+    except _urlerr.HTTPError as e:
+        return e.code, e.read().decode("utf-8", "replace")
+    except _socket.timeout:
+        raise TimeoutError("پاسخ در زمان مقرر نرسید") from None
+    except _urlerr.URLError as e:
+        reason = getattr(e, "reason", e)
+        if isinstance(reason, _socket.timeout):
+            raise TimeoutError("پاسخ در زمان مقرر نرسید") from None
+        raise ConnectionError(str(reason)) from None
+
+
+def _json_or_none(txt: str):
+    try:
+        return _j.loads(txt)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 # ── اتصال
 # نکتهٔ مهم: trust_env=False
-# بدون این گزینه، httpx متغیرهای HTTP_PROXY / ALL_PROXY سیستم را رعایت می‌کند و
-# درخواست به 127.0.0.1 را هم از پروکسی عبور می‌دهد — همان چیزی که باعث می‌شود
-# مرورگر Ollama را ببیند ولی برنامه نبیند.
+# کتابخانه‌های HTTP معمول (httpx، requests) متغیرهای HTTP_PROXY / ALL_PROXY سیستم را
+# رعایت می‌کنند و درخواست به 127.0.0.1 را هم از پروکسی عبور می‌دهند — همان چیزی که
+# باعث می‌شود مرورگر Ollama را ببیند ولی برنامه نبیند. ProxyHandler({}) این را خنثی می‌کند.
 def host() -> str:
     return (_ACTIVE_HOST or OLLAMA_HOST).rstrip("/")
 
@@ -182,10 +222,12 @@ def _has_model(names: list[str], want: str) -> bool:
 def _probe(url: str) -> tuple[bool, int, list[str], str]:
     try:
         t0 = time.time()
-        r = httpx.get(f"{url.rstrip('/')}/api/tags", timeout=4.0, trust_env=False)
-        r.raise_for_status()
+        code, txt = _http(f"{url.rstrip('/')}/api/tags", timeout=4.0)
+        if code >= 400:
+            return False, 0, [], f"HTTP {code}: {txt[:120]}"
         ms = int((time.time() - t0) * 1000)
-        models = [m.get("name") or m.get("model") for m in r.json().get("models", [])]
+        data = _json_or_none(txt) or {}
+        models = [m.get("name") or m.get("model") for m in data.get("models", [])]
         return True, ms, [m for m in models if m], ""
     except Exception as e:  # noqa: BLE001
         return False, 0, [], f"{type(e).__name__}: {e}"
@@ -240,10 +282,11 @@ def health() -> dict:
 def ps() -> list[dict]:
     """مدل‌هایی که همین حالا در حافظه بارگذاری شده‌اند."""
     try:
-        r = httpx.get(f"{host()}/api/ps", timeout=5.0, trust_env=False)
-        r.raise_for_status()
+        code, txt = _http(f"{host()}/api/ps", timeout=5.0)
+        if code >= 400:
+            return []
         out = []
-        for m in r.json().get("models", []):
+        for m in (_json_or_none(txt) or {}).get("models", []):
             size = m.get("size") or 0
             out.append({
                 "name": m.get("name") or m.get("model"),
@@ -261,14 +304,13 @@ def warmup(model: str | None = None) -> dict:
     m, _ = pick_model(want)
     t0 = time.time()
     try:
-        with httpx.Client(timeout=OLLAMA_TIMEOUT, trust_env=False) as c:
-            r = c.post(f"{host()}/api/chat", json={
-                "model": m, "stream": False, "keep_alive": OLLAMA_KEEP_ALIVE,
-                "messages": [{"role": "user", "content": "سلام"}],
-                "options": {"num_predict": 1, "num_ctx": 512},
-            })
-            if r.status_code >= 400:
-                return {"ok": False, "model": m, "error": _ollama_error(r)}
+        code, txt = _http(f"{host()}/api/chat", {
+            "model": m, "stream": False, "keep_alive": OLLAMA_KEEP_ALIVE,
+            "messages": [{"role": "user", "content": "سلام"}],
+            "options": {"num_predict": 1, "num_ctx": 512},
+        }, timeout=OLLAMA_TIMEOUT)
+        if code >= 400:
+            return {"ok": False, "model": m, "error": _body_error(code, txt)}
         return {"ok": True, "model": m, "seconds": round(time.time() - t0, 1),
                 "keep_alive": OLLAMA_KEEP_ALIVE, "loaded": ps()}
     except Exception as e:  # noqa: BLE001
@@ -335,6 +377,14 @@ def diag() -> dict:
     }
 
 
+def _body_error(code: int, txt: str) -> str:
+    """پیام خطای Ollama از بدنهٔ پاسخ."""
+    j = _json_or_none(txt)
+    if isinstance(j, dict) and j.get("error"):
+        return str(j["error"])[:300]
+    return (txt or "")[:300] or f"HTTP {code}"
+
+
 def _chat(model: str, messages: list[dict], max_tokens: int = AI_MAX_TOKENS) -> str:
     body = {
         "model": model,
@@ -349,45 +399,33 @@ def _chat(model: str, messages: list[dict], max_tokens: int = AI_MAX_TOKENS) -> 
             "top_p": 0.9,
         },
     }
-    with httpx.Client(timeout=OLLAMA_TIMEOUT, trust_env=False) as c:
-        r = c.post(f"{host()}/api/chat", json=body)
-        if r.status_code == 404:
-            detail = _ollama_error(r)
-            # حالت الف: سرویس قدیمی، مسیر /api/chat را ندارد → /api/generate
-            if "model" not in detail.lower():
-                return _generate(c, model, messages, max_tokens, body["options"])
-            # حالت ب: مدل نصب نیست
-            raise RuntimeError(f"مدل «{model}» روی این Ollama نصب نیست. "
-                               f"اجرا کنید: ollama pull {model}")
-        if r.status_code >= 400:
-            raise RuntimeError(f"Ollama کد {r.status_code} داد: {_ollama_error(r)}")
-        data = r.json()
+    code, txt = _http(f"{host()}/api/chat", body, timeout=OLLAMA_TIMEOUT)
+    if code == 404:
+        detail = _body_error(code, txt)
+        # حالت الف: سرویس قدیمی، مسیر /api/chat را ندارد → /api/generate
+        if "model" not in detail.lower():
+            return _generate(model, messages, body["options"])
+        # حالت ب: مدل نصب نیست
+        raise RuntimeError(f"مدل «{model}» روی این Ollama نصب نیست. "
+                           f"اجرا کنید: ollama pull {model}")
+    if code >= 400:
+        raise RuntimeError(f"Ollama کد {code} داد: {_body_error(code, txt)}")
+    data = _json_or_none(txt) or {}
     return (data.get("message") or {}).get("content", "") or ""
 
 
-def _ollama_error(r) -> str:
-    """متن خطای Ollama را از بدنهٔ پاسخ بیرون می‌کشد."""
-    try:
-        j = r.json()
-        if isinstance(j, dict) and j.get("error"):
-            return str(j["error"])[:300]
-    except Exception:  # noqa: BLE001
-        pass
-    return (r.text or "")[:300] or f"HTTP {r.status_code}"
-
-
-def _generate(c, model: str, messages: list[dict], max_tokens: int, options: dict) -> str:
+def _generate(model: str, messages: list[dict], options: dict) -> str:
     """مسیر جایگزین برای نسخه‌های قدیمی Ollama که /api/chat ندارند."""
     sys_part = "\n\n".join(m["content"] for m in messages if m["role"] == "system")
     usr_part = "\n\n".join(m["content"] for m in messages if m["role"] == "user")
-    r = c.post(f"{host()}/api/generate", json={
+    code, txt = _http(f"{host()}/api/generate", {
         "model": model, "prompt": usr_part, "system": sys_part,
         "stream": False, "format": "json", "keep_alive": OLLAMA_KEEP_ALIVE,
         "options": options,
-    })
-    if r.status_code >= 400:
-        raise RuntimeError(f"Ollama کد {r.status_code} داد: {_ollama_error(r)}")
-    return r.json().get("response", "") or ""
+    }, timeout=OLLAMA_TIMEOUT)
+    if code >= 400:
+        raise RuntimeError(f"Ollama کد {code} داد: {_body_error(code, txt)}")
+    return (_json_or_none(txt) or {}).get("response", "") or ""
 
 
 def _parse_json(txt: str):

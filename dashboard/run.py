@@ -44,8 +44,7 @@ def check() -> list[tuple[bool, str, str]]:
 
     # ۲) بسته‌ها
     need = [("fastapi", "fastapi"), ("uvicorn", "uvicorn"),
-            ("httpx", "httpx"), ("openpyxl", "openpyxl"),
-            ("multipart", "python-multipart")]
+            ("openpyxl", "openpyxl"), ("multipart", "python-multipart")]
     missing = []
     for mod, pkg in need:
         try:
