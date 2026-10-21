@@ -11,8 +11,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import ai, catalog, engine, views
-from .config import (DEFAULT_PERIOD, DEFAULT_YEAR, MODEL_ANALYSIS, MODEL_CHAT,
-                     MODEL_DEEP, OLLAMA_HOST, PERIOD_LABEL)
+from .config import (APP_VERSION, APP_BUILD, DEFAULT_PERIOD, DEFAULT_YEAR,
+                     MODEL_ANALYSIS, MODEL_CHAT, MODEL_DEEP, OLLAMA_HOST, PERIOD_LABEL)
 from .db import current_version, get_db, new_version
 from .seed import seed
 
@@ -50,6 +50,8 @@ def meta():
         "models": {"chat": MODEL_CHAT, "analysis": MODEL_ANALYSIS, "deep": MODEL_DEEP},
         "ollama_host": OLLAMA_HOST,
         "domains": [{"key": k, "label": v} for k, v in catalog.DOMAINS],
+        "app_version": APP_VERSION,
+        "app_build": APP_BUILD,
         "templates": {k: v[0] for k, v in catalog.TEMPLATES.items()},
     }
 
@@ -78,6 +80,12 @@ def ai_health(request: Request):
                              "به Ollama روی رایانهٔ شما دسترسی ندارد. "
                              "داشبورد باید روی همان رایانه‌ای اجرا شود که Ollama روی آن است.")
     return out
+
+
+@app.get("/api/ai/diag")
+def ai_diag():
+    """گزارش عیب‌یابی کامل — قابل مشاهده در خود داشبورد."""
+    return ai.diag()
 
 
 class AnalyzeReq(BaseModel):

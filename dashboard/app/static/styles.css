@@ -179,3 +179,36 @@ td.neg{color:var(--red)} td.pos{color:var(--green)}
   border-radius:50%;display:inline-block;animation:sp .7s linear infinite;vertical-align:-2px;margin-left:6px}
 @keyframes sp{to{transform:rotate(360deg)}}
 .hidden{display:none!important}
+
+/* ── نسخه و عیب‌یابی ── */
+.brand .ver{
+  margin-top:6px;font-size:10.5px;opacity:.45;letter-spacing:.3px;
+  font-variant-numeric:tabular-nums;
+}
+.diag-btn{
+  margin-top:8px;width:100%;padding:5px 8px;border-radius:7px;cursor:pointer;
+  background:rgba(255,255,255,.10);color:#fff;border:1px solid rgba(255,255,255,.22);
+  font-family:inherit;font-size:11px;transition:.15s;
+}
+.diag-btn:hover{background:rgba(255,255,255,.20)}
+.diag-panel{
+  background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px 18px;
+  margin-bottom:16px;
+}
+.diag-head{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.diag-head h3{font-size:14px;margin:0}
+.diag-head .meta{font-size:11px;color:var(--muted);margin-inline-start:auto}
+.diag-row{
+  display:flex;align-items:flex-start;gap:9px;padding:7px 0;
+  border-bottom:1px solid var(--line-soft,#EEF2F5);font-size:12px;
+}
+.diag-row:last-child{border-bottom:0}
+.diag-row .ic{width:15px;flex:0 0 15px;text-align:center;line-height:1.5}
+.diag-row .nm{width:190px;flex:0 0 190px;font-weight:500}
+.diag-row .dt{color:var(--muted);flex:1;word-break:break-word;font-size:11.5px}
+.diag-ok{color:#1E8E5A}
+.diag-no{color:#C0392B}
+.diag-close{
+  margin-inline-start:auto;background:none;border:0;cursor:pointer;color:var(--muted);
+  font-size:18px;line-height:1;padding:0 4px;
+}

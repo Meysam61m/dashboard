@@ -14,7 +14,7 @@ from datetime import datetime
 import httpx
 
 from . import catalog
-from .config import (AI_MAX_TOKENS, AI_TEMPERATURE, MODEL_ANALYSIS, MODEL_CHAT,
+from .config import (APP_VERSION, APP_BUILD, AI_MAX_TOKENS, AI_TEMPERATURE, MODEL_ANALYSIS, MODEL_CHAT,
                      MODEL_DEEP, OLLAMA_HOST, OLLAMA_TIMEOUT)
 
 PROMPT_VERSION = "v1.3"
@@ -234,6 +234,66 @@ def health() -> dict:
         "error_text": _classify(first_err), "models": [], "configured": conf,
         "installed": {"chat": False, "analysis": False, "deep": False},
         "engine": "ollama", "tried": tried,
+    }
+
+
+def diag() -> dict:
+    """گزارش کامل وضعیت — همان چیزی که diagnose_ollama.py می‌گوید، از داخل برنامه."""
+    import platform
+    import sys as _sys
+
+    h = health()
+    checks = []
+
+    def add(name, ok, detail):
+        checks.append({"name": name, "ok": ok, "detail": detail})
+
+    # ۱) سرویس
+    add("سرویس Ollama", h["online"],
+        f"پاسخ در {h.get('latency_ms')} میلی‌ثانیه" if h["online"]
+        else (h.get("error_text") or "پاسخ نداد"))
+
+    # ۲) نشانی
+    add("نشانی", True,
+        f"{h.get('host')}" + (" (جایگزین خودکار)" if h.get("switched") else ""))
+
+    # ۳) پروکسی
+    import os as _os
+    px = (_os.environ.get("HTTPS_PROXY") or _os.environ.get("HTTP_PROXY")
+          or _os.environ.get("ALL_PROXY") or _os.environ.get("https_proxy"))
+    add("پروکسی سیستم", True,
+        f"فعال است ({px}) — ولی نادیده گرفته می‌شود" if px else "تنظیم نشده")
+
+    # ۴) مدل‌ها
+    names = h.get("models") or []
+    for role, want in (("گفت‌وگو", MODEL_CHAT), ("تحلیل", MODEL_ANALYSIS), ("عمیق", MODEL_DEEP)):
+        have = _has_model(names, want)
+        add(f"مدل {role} ({want})", have,
+            "نصب است" if have else f"نصب نیست — ollama pull {want}")
+
+    # ۵) آزمون واقعی
+    real = {"ok": False, "text": "انجام نشد"}
+    if h["online"] and names:
+        model, _ = pick_model(MODEL_ANALYSIS)
+        try:
+            t0 = time.time()
+            out = _chat(model, [{"role": "user", "content": "فقط بنویس: آماده"}], max_tokens=8)
+            dt = time.time() - t0
+            real = {"ok": True, "model": model, "seconds": round(dt, 1),
+                    "text": (out or "").strip()[:40] or "(خالی)"}
+            add("تولید متن", True, f"مدل {model} در {dt:.1f} ثانیه پاسخ داد")
+        except Exception as e:  # noqa: BLE001
+            msg = str(e)
+            real = {"ok": False, "text": msg}
+            add("تولید متن", False, msg[:160])
+
+    return {
+        "app_version": APP_VERSION, "app_build": APP_BUILD,
+        "python": _sys.version.split()[0], "platform": platform.platform(terse=True),
+        "ollama": {k: h.get(k) for k in
+                   ("online", "host", "host_configured", "switched", "latency_ms",
+                    "error", "error_text", "models", "installed", "remote_backend")},
+        "checks": checks, "real_test": real,
     }
 
 

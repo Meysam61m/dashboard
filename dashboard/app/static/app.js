@@ -49,6 +49,8 @@ async function boot() {
   sp.onchange = e => { state.period = e.target.value; load(); };
   sy.onchange = e => { state.year = +e.target.value; load(); };
   await checkAI();
+  await loadVersion();
+  document.querySelector('#diagBtn')?.addEventListener('click', showDiag);
   const fromHash = (location.hash || '').replace('#', '');
   if (fromHash && PAGES.some(p => p.k === fromHash)) {
     state.page = fromHash;
@@ -79,6 +81,23 @@ function renderNav() {
     nav.querySelectorAll('a').forEach(x => x.classList.toggle('active', x === a));
     load();
   });
+}
+
+async function loadVersion() {
+  try {
+    const m = await (await fetch('/api/meta')).json();
+    const el = document.querySelector('#appVer');
+    if (el && m.app_version) {
+      el.textContent = `نسخه ${faVer(m.app_version)}`;
+      el.title = `تاریخ ساخت: ${faVer(m.app_build || '')}`;
+      el.dataset.v = m.app_version;
+    }
+  } catch (e) { /* بی‌اهمیت */ }
+}
+
+function faVer(v) {
+  const d = '۰۱۲۳۴۵۶۷۸۹';
+  return String(v).replace(/[0-9]/g, c => d[+c]).replace(/\./g, '٫');
 }
 
 async function checkAI() {
@@ -390,6 +409,61 @@ async function runAI() {
     clearInterval(iv); timer.textContent = '';
     btn.disabled = false; btn.textContent = 'تحلیل مجدد';
   }
+}
+
+async function showDiag() {
+  const btn = document.querySelector('#diagBtn');
+  let old = document.querySelector('#diagPanel');
+  if (old) { old.remove(); return; }
+  if (btn) btn.textContent = 'در حال بررسی…';
+  let d;
+  try {
+    d = await (await fetch('/api/ai/diag')).json();
+  } catch (e) {
+    if (btn) btn.textContent = 'عیب‌یابی';
+    toast('سرویس عیب‌یابی پاسخ نداد');
+    return;
+  }
+  if (btn) btn.textContent = 'عیب‌یابی';
+  const now = new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
+  const rows = (d.checks || []).map(c => `
+    <div class="diag-row">
+      <span class="ic ${c.ok ? 'diag-ok' : 'diag-no'}">${c.ok ? '✓' : '✗'}</span>
+      <span class="nm">${esc(c.name)}</span>
+      <span class="dt">${esc(c.detail || '')}</span>
+    </div>`).join('');
+  const panel = document.createElement('div');
+  panel.id = 'diagPanel';
+  panel.className = 'diag-panel';
+  panel.innerHTML = `
+    <div class="diag-head">
+      <h3>عیب‌یابی اتصال</h3>
+      <span class="meta">نسخه ${esc(faVer(d.app_version))} · پایتون ${esc(faVer(d.python))} · ${esc(now)}</span>
+      <button class="diag-close" title="بستن">×</button>
+    </div>
+    ${rows}
+    <div class="diag-row" style="margin-top:6px;border-top:1px solid var(--line);padding-top:10px">
+      <span class="ic ${d.real_test?.ok ? 'diag-ok' : 'diag-no'}">${d.real_test?.ok ? '✓' : '✗'}</span>
+      <span class="nm">آزمون واقعی مدل</span>
+      <span class="dt">${d.real_test?.ok
+        ? `مدل ${esc(d.real_test.model)} در ${esc(faVer(d.real_test.seconds))} ثانیه پاسخ داد`
+        : esc(d.real_test?.text || 'انجام نشد')}</span>
+    </div>
+    <div style="margin-top:12px;font-size:11.5px;color:var(--muted)">
+      این گزارش را می‌توانید عیناً برای بررسی بفرستید.
+      <button id="diagCopy" style="font-family:inherit;font-size:11px;background:none;border:0;color:#2A7F86;cursor:pointer;text-decoration:underline">کپی متن</button>
+    </div>`;
+  document.querySelector('.content')?.prepend(panel);
+  panel.querySelector('.diag-close').onclick = () => panel.remove();
+  panel.querySelector('#diagCopy').onclick = async () => {
+    const txt = `نسخهٔ داشبورد: ${d.app_version} (${d.app_build})
+پایتون: ${d.python} | ${d.platform}
+${(d.checks || []).map(c => `${c.ok ? '✓' : '✗'} ${c.name}: ${c.detail}`).join('\n')}
+آزمون مدل: ${d.real_test?.ok ? 'موفق' : 'ناموفق'} — ${d.real_test?.text || ''}`;
+    try { await navigator.clipboard.writeText(txt); toast('گزارش کپی شد'); }
+    catch (e) { toast('کپی نشد — دستی انتخاب کنید'); }
+  };
+  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 function plainErr(e) {
