@@ -157,11 +157,56 @@ def main() -> int:
         else:
             bad(f"{need} نصب نیست → ollama pull {need}")
 
-    # ۶) نتیجه
+    # ۶) آزمون واقعی تولید متن
+    head("۶) آزمون واقعی تولید متن (مسیر /api/chat)")
+    test_model = next((n for n in NEEDED if n in models), None) or (models[0] if models else None)
+    if not test_model:
+        bad("مدلی برای آزمون نیست")
+    else:
+        try:
+            import httpx
+            print(f"  در حال پرسش از «{test_model}» (تا ۹۰ ثانیه)…")
+            t0 = time.time()
+            r = httpx.post(f"{working}/api/chat", timeout=90.0, trust_env=False, json={
+                "model": test_model, "stream": False,
+                "messages": [{"role": "user", "content": "فقط بنویس: آماده"}],
+                "options": {"num_predict": 8, "num_ctx": 512},
+            })
+            dt = time.time() - t0
+            if r.status_code == 200:
+                txt = (r.json().get("message") or {}).get("content", "").strip()
+                ok(f"پاسخ در {dt:.1f} ثانیه: «{txt[:40]}»")
+                tok = r.json().get("eval_count")
+                if tok and dt > 0:
+                    ok(f"سرعت تقریبی: {tok / dt:.1f} توکن بر ثانیه")
+            elif r.status_code == 404:
+                try:
+                    msg = r.json().get("error", "")
+                except Exception:  # noqa: BLE001
+                    msg = r.text[:100]
+                bad(f"کد ۴۰۴ — {msg or 'مسیر /api/chat یافت نشد'}")
+                if "model" in str(msg).lower():
+                    print("     یعنی: این مدل نصب نیست → ollama pull " + test_model)
+                else:
+                    print("     یعنی: نسخهٔ Ollama قدیمی است و /api/chat ندارد.")
+                    print("     راه‌حل: Ollama را به‌روزرسانی کنید (ollama.com/download)")
+            else:
+                bad(f"کد {r.status_code}: {r.text[:150]}")
+        except Exception as e:  # noqa: BLE001
+            bad(f"{type(e).__name__}: {str(e)[:120]}")
+
+    # ۷) نتیجه
     head("نتیجه")
-    if working and all(n in models for n in NEEDED):
-        print("  \033[92mهمه‌چیز آماده است.\033[0m برنامه را اجرا کنید:  python run.py")
+    missing = [n for n in NEEDED if n not in models]
+    if missing:
+        print(f"  \033[93mاین مدل‌ها نصب نیستند:\033[0m {', '.join(missing)}")
+        for m in missing:
+            print(f"     ollama pull {m}")
+        print("\n  بدون این مدل‌ها داشبورد کار می‌کند و تحلیل قاعده‌محور می‌دهد،")
+        print("  ولی تحلیل هوشمند با مدل زبانی انجام نمی‌شود.")
         return 0
+    print("  \033[92mهمه‌چیز آماده است.\033[0m برنامه را اجرا کنید:  python run.py")
+    return 0
     print("  \033[93mموارد بالا را برطرف کنید، سپس دوباره این فایل را اجرا کنید.\033[0m")
     return 0
 

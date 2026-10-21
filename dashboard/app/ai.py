@@ -145,6 +145,30 @@ def _candidates() -> list[str]:
     return out
 
 
+_MODELS_CACHE: list[str] | None = None
+
+
+def known_models(refresh: bool = False) -> list[str]:
+    """فهرست مدل‌های نصب‌شده؛ یک‌بار خوانده و نگه داشته می‌شود."""
+    global _MODELS_CACHE
+    if _MODELS_CACHE is None or refresh:
+        h = health()
+        _MODELS_CACHE = h.get("models") or []
+    return _MODELS_CACHE
+
+
+def pick_model(want: str) -> tuple[str, bool]:
+    """اگر مدل درخواستی نصب نباشد، بهترین مدلِ موجود به‌جایش برگردانده می‌شود.
+    خروجی: (مدل انتخابی، آیا جایگزین شده)"""
+    names = known_models()
+    if not names or _has_model(names, want):
+        return want, False
+    for alt in (MODEL_ANALYSIS, MODEL_CHAT, MODEL_DEEP):
+        if _has_model(names, alt):
+            return alt, alt != want
+    return names[0], names[0] != want
+
+
 def _has_model(names: list[str], want: str) -> bool:
     """تطبیق دقیق. اگر نسخهٔ درخواستی برچسب داشته باشد، همان برچسب لازم است
     (qwen3.5:4b نباید جای qwen3.5:9b پذیرفته شود)."""
@@ -193,6 +217,7 @@ def health() -> dict:
         tried.append({"host": url, "ok": ok, "error": err})
         if ok:
             _ACTIVE_HOST = url
+            globals()["_MODELS_CACHE"] = names
             return {
                 "online": True, "latency_ms": ms, "host": url,
                 "host_configured": OLLAMA_HOST.rstrip("/"),
@@ -227,9 +252,42 @@ def _chat(model: str, messages: list[dict], max_tokens: int = AI_MAX_TOKENS) -> 
     }
     with httpx.Client(timeout=OLLAMA_TIMEOUT, trust_env=False) as c:
         r = c.post(f"{host()}/api/chat", json=body)
-        r.raise_for_status()
+        if r.status_code == 404:
+            detail = _ollama_error(r)
+            # حالت الف: سرویس قدیمی، مسیر /api/chat را ندارد → /api/generate
+            if "model" not in detail.lower():
+                return _generate(c, model, messages, max_tokens, body["options"])
+            # حالت ب: مدل نصب نیست
+            raise RuntimeError(f"مدل «{model}» روی این Ollama نصب نیست. "
+                               f"اجرا کنید: ollama pull {model}")
+        if r.status_code >= 400:
+            raise RuntimeError(f"Ollama کد {r.status_code} داد: {_ollama_error(r)}")
         data = r.json()
     return (data.get("message") or {}).get("content", "") or ""
+
+
+def _ollama_error(r) -> str:
+    """متن خطای Ollama را از بدنهٔ پاسخ بیرون می‌کشد."""
+    try:
+        j = r.json()
+        if isinstance(j, dict) and j.get("error"):
+            return str(j["error"])[:300]
+    except Exception:  # noqa: BLE001
+        pass
+    return (r.text or "")[:300] or f"HTTP {r.status_code}"
+
+
+def _generate(c, model: str, messages: list[dict], max_tokens: int, options: dict) -> str:
+    """مسیر جایگزین برای نسخه‌های قدیمی Ollama که /api/chat ندارند."""
+    sys_part = "\n\n".join(m["content"] for m in messages if m["role"] == "system")
+    usr_part = "\n\n".join(m["content"] for m in messages if m["role"] == "user")
+    r = c.post(f"{host()}/api/generate", json={
+        "model": model, "prompt": usr_part, "system": sys_part,
+        "stream": False, "format": "json", "options": options,
+    })
+    if r.status_code >= 400:
+        raise RuntimeError(f"Ollama کد {r.status_code} داد: {_ollama_error(r)}")
+    return r.json().get("response", "") or ""
 
 
 def _parse_json(txt: str):
@@ -328,7 +386,10 @@ def analyze(conn, scope_key: str, scope_label: str, bundle: dict,
             alerts: list[dict], model: str | None = None, force: bool = False) -> dict:
     from .db import current_version
 
-    model = model or MODEL_ANALYSIS
+    model_requested = model or MODEL_ANALYSIS
+    model, substituted = pick_model(model_requested)
+    model_notice = (f"مدل «{model_requested}» نصب نیست؛ تحلیل با «{model}» انجام شد."
+                    if substituted else None)
     ver = current_version(conn)
     key = hashlib.sha256(
         json.dumps({"scope": scope_key, "v": ver, "model": model, "p": PROMPT_VERSION},
@@ -399,6 +460,7 @@ def analyze(conn, scope_key: str, scope_label: str, bundle: dict,
         conn.execute("INSERT INTO ai_log(created,model,scope,ok,latency_ms,error) VALUES(?,?,?,?,?,?)",
                      (datetime.now().isoformat(timespec="seconds"), model, scope_key, 1, latency, None))
         return {"status": "ok", "source": "ollama", "model": model,
+                "model_requested": model_requested, "model_notice": model_notice,
                 "created": datetime.now().isoformat(timespec="seconds"),
                 "payload": payload, "validation": v, "latency_ms": latency, "cached": False}
     except Exception as e:  # noqa: BLE001
@@ -409,6 +471,7 @@ def analyze(conn, scope_key: str, scope_label: str, bundle: dict,
         payload = rules_narrative(bundle, alerts)
         v = validate_numbers(_all_texts(payload), allowed, raw_values)
         return {"status": "fallback", "source": "rules", "model": "قاعده‌محور",
+                "model_requested": model_requested, "model_notice": model_notice,
                 "created": datetime.now().isoformat(timespec="seconds"),
                 "payload": payload, "validation": v, "error": err, "cached": False}
 

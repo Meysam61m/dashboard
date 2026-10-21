@@ -392,15 +392,25 @@ async function runAI() {
   }
 }
 
+function plainErr(e) {
+  if (!e) return '';
+  if (/404.*api\/chat|model.*not found/i.test(e)) return 'مدل انتخابی روی Ollama نصب نیست — ollama pull را اجرا کنید';
+  if (/refused|ConnectError/i.test(e)) return 'Ollama پاسخ نداد — سرویس اجرا نشده یا نشانی متفاوت است';
+  if (/timeout|timed out/i.test(e)) return 'زمان پاسخ به پایان رسید — مدل مشغول بارگذاری است، دوباره تلاش کنید';
+  if (/proxy/i.test(e)) return 'پروکسی سیستم مانع اتصال است';
+  return e.length > 180 ? e.slice(0, 180) + '…' : e;
+}
+
 function renderAIResult(res) {
   const body = document.querySelector('#aiBody');
   const banner = document.querySelector('#aiBanner');
   const p = res.payload || {};
   const v = res.validation || {};
   if (res.source === 'rules') {
-    banner.innerHTML = `<div class="banner warn"><b>تحلیل قاعده‌محور</b> — مدل زبانی در دسترس نبود، بنابراین این متن از قواعد قطعی و اعداد همین صفحه ساخته شده است. ${res.error ? '<span style="opacity:.7;font-size:11px">(' + esc(res.error) + ')</span>' : ''}</div>`;
+    banner.innerHTML = `<div class="banner warn"><b>تحلیل قاعده‌محور</b> — مدل زبانی در دسترس نبود، بنابراین این متن از قواعد قطعی و اعداد همین صفحه ساخته شده است. ${res.error ? '<span style="opacity:.7;font-size:11px">(' + esc(plainErr(res.error)) + ')</span>' : ''}</div>`;
   } else {
-    banner.innerHTML = `<div class="banner ok">تحلیل با مدل <b>${esc(res.model)}</b> تولید شد${res.cached ? ' (از حافظهٔ کش)' : ''}.</div>`;
+    banner.innerHTML = `<div class="banner ok">تحلیل با مدل <b>${esc(res.model)}</b> تولید شد${res.cached ? ' (از حافظهٔ کش)' : ''}.</div>`
+      + (res.model_notice ? `<div class="banner warn" style="margin-top:8px">${esc(res.model_notice)}</div>` : '');
   }
   let html = '';
   if (p.headline) html += `<div class="headline">${esc(p.headline)}</div>`;
@@ -415,7 +425,7 @@ function renderAIResult(res) {
   if (!html) html = `<div class="banner warn">پاسخی برای نمایش وجود ندارد.</div>`;
   const unknown = v.unknown || [];
   html += `<div class="trust">
-      <span>مدل: ${esc(res.model || '—')}</span>
+      <span>مدل: ${esc(res.model || '—')}${res.model_requested && res.model_requested !== res.model ? ` <span style="opacity:.6">(به‌جای ${esc(res.model_requested)})</span>` : ''}</span>
       <span>زمان: ${esc((res.created || '').replace('T', ' '))}</span>
       <span>اعداد بررسی‌شده: ${fa(v.checked || 0)}</span>
       ${unknown.length ? `<span style="color:#C0392B">عدد تأییدنشده: ${esc(unknown.join('، '))}</span>`
