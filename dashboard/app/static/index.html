@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>داشبورد مدیریتی — مجتمع خراسان</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="app">
+
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo">خ</div>
+      <h1>مجتمع خراسان</h1>
+      <p>داشبورد مدیریتی هوشمند</p>
+    </div>
+    <nav class="nav" id="nav"></nav>
+    <div class="ai-badge" id="aiBadge">
+      <b>هوش مصنوعی محلی</b>
+      <span id="aiState">در حال بررسی…</span>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <div>
+        <h2 id="pageTitle">نمای مدیریتی</h2>
+        <div class="en" id="pageEn">Management Overview</div>
+      </div>
+      <div class="spacer"></div>
+      <div class="ctrl"><label>شعبه</label><select id="selBranch"></select></div>
+      <div class="ctrl"><label>دوره</label><select id="selPeriod"></select></div>
+      <div class="ctrl"><label>سال</label><select id="selYear"></select></div>
+    </div>
+    <div class="content" id="content"></div>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
