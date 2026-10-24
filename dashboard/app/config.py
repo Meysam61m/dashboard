@@ -3,7 +3,7 @@
 #  نسخهٔ برنامه — تنها منبع حقیقت
 #  این عدد در رابط کاربری، API و عیب‌یاب نمایش داده می‌شود.
 # ══════════════════════════════════════════════
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.6.0"
 APP_BUILD = "1405-07-29"
 
 import os
@@ -23,7 +23,7 @@ MODEL_ANALYSIS = os.environ.get("MODEL_ANALYSIS", "qwen3.5:9b")
 MODEL_DEEP = os.environ.get("MODEL_DEEP", "gemma4:12b")
 
 # سقف خروجی هر تحلیل (به دلیل سرعت پایین CPU)
-AI_MAX_TOKENS = int(os.environ.get("AI_MAX_TOKENS", "350"))
+AI_MAX_TOKENS = int(os.environ.get("AI_MAX_TOKENS", "900"))
 
 # مدل بعد از هر تحلیل چند دقیقه در حافظه بماند؟
 # روی CPU، بارگذاری دوبارهٔ مدل ۹b حدود ۳۰ تا ۶۰ ثانیه طول می‌کشد.

@@ -41,7 +41,8 @@ SYSTEM_PROMPT = """تو یک تحلیل‌گر مالی و عملیاتی برا
   "actions": ["اقدام پیشنهادی مشخص"],
   "data_gaps": ["شاخص یا دادهٔ ناقص"]
 }
-حداکثر ۳ یافته، ۳ عامل، ۳ ریسک و ۳ اقدام بنویس. کوتاه بنویس."""
+حداکثر ۲ یافته، ۲ عامل، ۲ ریسک و ۲ اقدام بنویس. هر رشته حداکثر ۱۵ کلمه.
+پاسخ باید با { شروع شود و با } تمام شود. هیچ متنی پیش یا پس از JSON ننویس."""
 
 
 # ── کمکی‌ها
@@ -385,7 +386,9 @@ def _body_error(code: int, txt: str) -> str:
     return (txt or "")[:300] or f"HTTP {code}"
 
 
-def _chat(model: str, messages: list[dict], max_tokens: int = AI_MAX_TOKENS) -> str:
+def _chat(model: str, messages: list[dict], max_tokens: int = AI_MAX_TOKENS,
+          meta: dict | None = None) -> str:
+    """متن پاسخ. اگر meta داده شود، علت پایان تولید (length = بریدگی) در آن نوشته می‌شود."""
     body = {
         "model": model,
         "messages": messages,
@@ -411,6 +414,9 @@ def _chat(model: str, messages: list[dict], max_tokens: int = AI_MAX_TOKENS) -> 
     if code >= 400:
         raise RuntimeError(f"Ollama کد {code} داد: {_body_error(code, txt)}")
     data = _json_or_none(txt) or {}
+    if meta is not None:
+        meta["done_reason"] = data.get("done_reason") or ""
+        meta["eval_count"] = data.get("eval_count")
     return (data.get("message") or {}).get("content", "") or ""
 
 
@@ -428,21 +434,81 @@ def _generate(model: str, messages: list[dict], options: dict) -> str:
     return (_json_or_none(txt) or {}).get("response", "") or ""
 
 
+def _close_truncated(txt: str) -> str:
+    """JSON نیمه‌تمام را می‌بندد: رشتهٔ باز را تمام و آکولادهای باز را می‌بندد."""
+    out = []
+    stack = []          # آکولادها و براکت‌های باز
+    in_str = False
+    esc = False
+    for ch in txt:
+        out.append(ch)
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]":
+            if stack and stack[-1] == ch:
+                stack.pop()
+    if in_str:
+        out.append('"')
+    # حذف عضو نیمه‌تمام انتهایی مثل  ,"risks":  یا  ,"risks": [
+    body = "".join(out).rstrip()
+    body = re.sub(r',\s*"[^"]*"\s*:\s*$', "", body)          # ,"key":
+    body = re.sub(r',\s*$', "", body)                          # ویرگول انتهایی
+    body = re.sub(r'"\s*:\s*$', "", body)                     # "key":
+    for closer in reversed(stack):
+        body += closer
+    return body
+
+
 def _parse_json(txt: str):
-    txt = txt.strip()
-    if txt.startswith("```"):
-        txt = re.sub(r"^```[a-zA-Z]*\n?", "", txt)
-        txt = re.sub(r"\n?```$", "", txt)
-    try:
-        return json.loads(txt)
-    except json.JSONDecodeError:
-        m = re.search(r"\{.*\}", txt, re.S)
-        if m:
-            try:
-                return json.loads(m.group(0))
-            except json.JSONDecodeError:
-                return None
+    """تجزیهٔ JSON با تحمل خطا: حذف بلوک کد، نقل‌قول‌های فارسی، ویرگول اضافه،
+    و ترمیم پاسخِ نیمه‌تمام."""
+    if not txt or not txt.strip():
+        return None
+    t = txt.strip()
+
+    # بلوک کد
+    t = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", t)
+    t = re.sub(r"\s*```$", "", t)
+    t = t.strip()
+
+    # نقل‌قول‌های تایپوگرافی
+    t = (t.replace("\u201c", '"').replace("\u201d", '"')
+          .replace("\u00ab", '"').replace("\u00bb", '"')
+          .replace("\u2018", "'").replace("\u2019", "'"))
+
+    for candidate in (t, _slice_object(t), _close_truncated(t), _close_truncated(_slice_object(t))):
+        if not candidate:
+            continue
+        c = candidate.strip()
+        c = re.sub(r",\s*([}\]])", r"\1", c)          # ویرگول پیش از بستن
+        try:
+            v = json.loads(c)
+            if isinstance(v, dict):
+                return v
+        except json.JSONDecodeError:
+            continue
     return None
+
+
+def _slice_object(t: str) -> str:
+    """از اولین آکولاد تا آخرین آکولاد — برای وقتی مدل متن اضافه نوشته."""
+    i = t.find("{")
+    j = t.rfind("}")
+    if i >= 0 and j > i:
+        return t[i:j + 1]
+    if i >= 0:
+        return t[i:]
+    return ""
 
 
 def _normalize(payload: dict) -> dict:
@@ -569,11 +635,30 @@ def analyze(conn, scope_key: str, scope_label: str, bundle: dict,
     payload = None
     raw = ""
     try:
+        meta: dict = {}
         raw = _chat(model, [{"role": "system", "content": SYSTEM_PROMPT},
-                            {"role": "user", "content": user_msg}])
+                            {"role": "user", "content": user_msg}], meta=meta)
         payload = _parse_json(raw)
+
+        # تلاش دوم: پاسخ ناقص بود یا JSON خراب درآمد
         if payload is None:
-            raise ValueError("پاسخ مدل JSON معتبر نبود")
+            note = ("پاسخ قبلی ناقص بود و کامل نشد. " if meta.get("done_reason") == "length"
+                    else "پاسخ قبلی JSON معتبر نبود. ")
+            raw_meta: dict = {}
+            raw = _chat(model, [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg},
+                {"role": "assistant", "content": (raw or "")[:1500]},
+                {"role": "user", "content":
+                    note + "فقط یک شیء JSON معتبر و کامل بنویس. کوتاه: حداکثر ۲ مورد در هر فهرست. "
+                           "بدون هیچ متن اضافه."},
+            ], max_tokens=min(1200, AI_MAX_TOKENS + 300), meta=raw_meta)
+            payload = _parse_json(raw)
+            meta = raw_meta
+
+        if payload is None:
+            raise ValueError("پاسخ مدل JSON معتبر نبود"
+                             + (f" (پاسخ خام: {raw[:200]}…)" if raw else ""))
         payload = _normalize(payload)
 
         v = validate_numbers(_all_texts(payload), allowed, raw_values)
@@ -610,6 +695,7 @@ def analyze(conn, scope_key: str, scope_label: str, bundle: dict,
         v = validate_numbers(_all_texts(payload), allowed, raw_values)
         return {"status": "fallback", "source": "rules", "model": "قاعده‌محور",
                 "model_requested": model_requested, "model_notice": model_notice,
+                "raw_excerpt": (raw or "")[:400] or None,
                 "created": datetime.now().isoformat(timespec="seconds"),
                 "payload": payload, "validation": v, "error": err, "cached": False}
 

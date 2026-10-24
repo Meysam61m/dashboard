@@ -508,7 +508,12 @@ function renderAIResult(res) {
   const p = res.payload || {};
   const v = res.validation || {};
   if (res.source === 'rules') {
-    banner.innerHTML = `<div class="banner warn"><b>تحلیل قاعده‌محور</b> — مدل زبانی در دسترس نبود، بنابراین این متن از قواعد قطعی و اعداد همین صفحه ساخته شده است. ${res.error ? '<span style="opacity:.7;font-size:11px">(' + esc(plainErr(res.error)) + ')</span>' : ''}</div>`;
+    const connected = res.error && !/not found|nصب نیست|ConnectError|refused/i.test(res.error);
+    banner.innerHTML = `<div class="banner warn"><b>تحلیل قاعده‌محور</b> — ${connected
+      ? 'مدل پاسخ داد ولی خروجی‌اش قابل استفاده نبود، بنابراین این متن از قواعد قطعی و اعداد همین صفحه ساخته شده است.'
+      : 'مدل زبانی در دسترس نبود، بنابراین این متن از قواعد قطعی و اعداد همین صفحه ساخته شده است.'}
+      ${res.error ? '<span style="opacity:.7;font-size:11px">(' + esc(plainErr(res.error)) + ')</span>' : ''}</div>`
+      + (res.raw_excerpt ? `<details style="margin-top:8px;font-size:11.5px"><summary style="cursor:pointer;color:var(--muted)">پاسخ خام مدل را ببینید</summary><pre style="white-space:pre-wrap;background:#F7F9FA;border:1px solid var(--line);border-radius:8px;padding:10px;margin-top:6px;font-family:inherit;direction:rtl">${esc(res.raw_excerpt)}</pre></details>` : '');
   } else {
     banner.innerHTML = `<div class="banner ok">تحلیل با مدل <b>${esc(res.model)}</b> تولید شد${res.cached ? ' (از حافظهٔ کش)' : ''}.</div>`
       + (res.model_notice ? `<div class="banner warn" style="margin-top:8px">${esc(res.model_notice)}</div>` : '');
