@@ -345,12 +345,22 @@ def diag() -> dict:
     add("پروکسی سیستم", True,
         f"فعال است ({px}) — ولی نادیده گرفته می‌شود" if px else "تنظیم نشده")
 
-    # ۴) مدل‌ها
+    # ۴) مدل‌ها — «تحلیل» الزامی است؛ دو مدل دیگر اختیاری
     names = h.get("models") or []
-    for role, want in (("گفت‌وگو", MODEL_CHAT), ("تحلیل", MODEL_ANALYSIS), ("عمیق", MODEL_DEEP)):
+    for role, want, required in (("تحلیل", MODEL_ANALYSIS, True),
+                                 ("گفت‌وگو", MODEL_CHAT, False),
+                                 ("عمیق", MODEL_DEEP, False)):
         have = _has_model(names, want)
-        add(f"مدل {role} ({want})", have,
-            "نصب است" if have else f"نصب نیست — ollama pull {want}")
+        if have:
+            add(f"مدل {role} ({want})", True, "نصب است")
+        elif required:
+            add(f"مدل {role} ({want})", False, f"نصب نیست — ollama pull {want}")
+        else:
+            # اختیاری: نبودنش مانع کار نیست، پس علامت هشدار نه خطا
+            checks.append({
+                "name": f"مدل {role} ({want})", "ok": True, "optional": True,
+                "detail": f"نصب نیست — اختیاری. اگر خواستید: ollama pull {want}",
+            })
 
     # ۵) آزمون واقعی
     real = {"ok": False, "text": "انجام نشد"}
@@ -373,6 +383,11 @@ def diag() -> dict:
                    ("online", "host", "host_configured", "switched", "latency_ms",
                     "error", "error_text", "models", "installed", "remote_backend")},
         "checks": checks, "real_test": real,
+        "available": {
+            "chat": _has_model(names, MODEL_CHAT),
+            "analysis": _has_model(names, MODEL_ANALYSIS),
+            "deep": _has_model(names, MODEL_DEEP),
+        },
         "loaded": ps(),
         "keep_alive": OLLAMA_KEEP_ALIVE,
     }

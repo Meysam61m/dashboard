@@ -358,6 +358,13 @@ function donutChart(spec) {
 }
 
 /* ───────────────────────── تحلیل هوش مصنوعی */
+function modelOpt(h, key, label) {
+  const name = h.configured?.[key];
+  if (!name) return '';
+  const has = h.installed?.[key];
+  return `<option value="${esc(name)}"${has ? '' : ' disabled'}>${esc(name)} — ${esc(label)}${has ? '' : ' (نصب نیست)'}</option>`;
+}
+
 function aiPanel(data) {
   const p = el('div', 'panel');
   p.id = 'aiPanel';
@@ -367,10 +374,10 @@ function aiPanel(data) {
     <div class="ai-head">
       <h3>تحلیل هوشمند این صفحه</h3>
       <select id="aiModel" class="btn" style="padding:6px 10px">
-        <option value="">مدل تحلیل (پیش‌فرض)</option>
-        <option value="${esc(h.configured?.chat || 'qwen3.5:4b')}">${esc(h.configured?.chat || 'qwen3.5:4b')} — سریع</option>
-        <option value="${esc(h.configured?.analysis || 'qwen3.5:9b')}">${esc(h.configured?.analysis || 'qwen3.5:9b')} — تحلیل</option>
-        <option value="${esc(h.configured?.deep || 'gemma4:12b')}">${esc(h.configured?.deep || 'gemma4:12b')} — عمیق</option>
+        <option value="">توصیهٔ برنامه (خودکار)</option>
+        ${modelOpt(h, 'analysis', 'تحلیل')}
+        ${modelOpt(h, 'chat', 'سریع')}
+        ${modelOpt(h, 'deep', 'عمیق')}
       </select>
       <button class="btn primary" id="aiRun">تولید تحلیل</button>
       <span class="ai-meta" id="aiTimer"></span>
@@ -428,7 +435,7 @@ async function showDiag() {
   const now = new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
   const rows = (d.checks || []).map(c => `
     <div class="diag-row">
-      <span class="ic ${c.ok ? 'diag-ok' : 'diag-no'}">${c.ok ? '✓' : '✗'}</span>
+      <span class="ic ${c.optional ? 'diag-opt' : (c.ok ? 'diag-ok' : 'diag-no')}">${c.optional ? '–' : (c.ok ? '✓' : '✗')}</span>
       <span class="nm">${esc(c.name)}</span>
       <span class="dt">${esc(c.detail || '')}</span>
     </div>`).join('');

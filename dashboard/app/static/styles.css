@@ -212,3 +212,5 @@ td.neg{color:var(--red)} td.pos{color:var(--green)}
   margin-inline-start:auto;background:none;border:0;cursor:pointer;color:var(--muted);
   font-size:18px;line-height:1;padding:0 4px;
 }
+
+.diag-opt{color:#8B9AA6}
