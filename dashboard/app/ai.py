@@ -1091,3 +1091,192 @@ def build_bundle(rows: list[dict], period_label: str, extra=None) -> dict:
                 "مبنای تناژ عملیات": "تخلیه + بارگیری + ترانشیپ + حمل یکسره (روزوب جدا)",
                 "مبنای بهره‌وری ناوگان": "فقط ۷۰ دستگاه عملیاتی، تناژ باربری + ترانشیپ",
             }}
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  پرسش از داده («نظرت در مورد شعبهٔ نیشابور چیه؟»)
+# ─────────────────────────────────────────────────────────────────────────────
+
+BRANCHES = ["مجتمع", "شهید کاوه", "مطهری", "سرخس", "لطف آباد", "نیشابور",
+            "ماهیرود", "دوغارون", "بجنورد", "بیرجند", "باجگیران"]
+
+# نام‌های دیگری که کاربر ممکن است بنویسد
+BRANCH_ALIASES = {
+    "کاوه": "شهید کاوه", "شهیدکاوه": "شهید کاوه", "سرخسی": "سرخس",
+    "لطف‌آباد": "لطف آباد", "لطفاباد": "لطف آباد", "ماهیرود": "ماهیرود",
+    "ماهی‌رود": "ماهیرود", "دوغاران": "دوغارون", "بیرجندی": "بیرجند",
+    "باجگیرون": "باجگیران", "نیسابور": "نیشابور", "نشابور": "نیشابور",
+}
+
+ASK_PROMPT = """تو تحلیل‌گر مالی و عملیاتی مجتمع انبارهای عمومی خراسان هستی و با مدیرعامل صحبت می‌کنی.
+
+قواعد سخت‌گیرانه:
+۱. فقط از اعداد «بستهٔ واقعیت» که به تو داده می‌شود استفاده کن. هیچ عددی از خودت نساز.
+   هیچ محاسبهٔ تازه‌ای انجام نده؛ فقط مقایسه‌های ساده و صریح.
+۲. کوتاه و کاربردی جواب بده. حداکثر ۵ جمله یا ۴ بولت. مقدمه‌چینی و تعارف نکن.
+۳. اگر دادهٔ پرسش در بسته نیست، صریح بگو «این داده در داشبورد نیست» و بگو چه چیزی هست.
+   حدس نزن و برای پر کردن جا، از دانش عمومی استفاده نکن.
+۴. وقتی شاخصی بهتر یا بدتر از سال قبل است، عدد هر دو سال را بیاور.
+۵. فارسی روان و اداری؛ بدون حروف لاتین، بدون ایموجی، بدون علامت تزئینی.
+۶. اگر شاخصی بودجه دارد، تحقق بودجه را هم بگو.
+
+لحن: مثل یک مشاور که به داده نگاه کرده و در دو خط می‌گوید چه خبر است و چه باید کرد."""
+
+
+def detect_branch(text: str) -> tuple[str | None, bool]:
+    """نام شعبه را از متن پرسش درمی‌آورد. (branch, explicit)"""
+    t = (text or "").replace("ي", "ی").replace("ك", "ک")
+    found, explicit = None, False
+    for b in BRANCHES:
+        if b in t:
+            if b == "مجتمع":
+                explicit = True
+                found = found or b
+            elif found is None or len(b) > len(found):
+                found = b
+    if found is None:
+        for alias, real in BRANCH_ALIASES.items():
+            if alias in t:
+                found = real
+                break
+    return found, explicit or bool(found)
+
+
+def branch_facts(conn, branch: str, year: int, period: str) -> tuple[list[dict], str]:
+    """همهٔ شاخص‌های یک شعبه — آماده برای تزریق به مدل."""
+    rows = conn.execute(
+        """SELECT k.code, k.act, k.bud, k.ly,
+                  COALESCE(m.title, k.code) AS title, COALESCE(m.unit, '') AS unit
+           FROM kpi k LEFT JOIN dim_metric m ON m.code = k.code
+           WHERE k.branch = ? AND k.year = ? AND k.period = ?
+           ORDER BY k.code""", (branch, year, period)).fetchall()
+    facts = []
+    for r in rows:
+        # دسترسی موقعیتی — مستقل از row_factory اتصال
+        code, act, bud, ly, title, unit = (r[0], r[1], r[2], r[3], r[4], r[5])
+        if act is None and bud is None and ly is None:
+            continue
+        facts.append({"code": code, "title": title, "unit": unit,
+                      "act": act, "bud": bud, "ly": ly})
+    return facts, period
+
+
+def _num(v):
+    if v is None:
+        return "—"
+    if abs(v - round(v)) < 0.05:
+        return f"{int(round(v)):,}"
+    return f"{v:,.1f}"
+
+
+def facts_text(facts: list[dict], branch: str, year: int, period: str) -> str:
+    """بستهٔ واقعیت را فشرده و خوانا به متن تبدیل می‌کند (کوتاه، برای پنجرهٔ ۸K)."""
+    pname = {"H1": "شش‌ماههٔ نخست", "H2": "شش‌ماههٔ دوم", "Y": "سالانه"}.get(period, period)
+    head = (f"شعبه: {branch} | دوره: {pname} {year} | "
+            f"تعداد شاخص: {len(facts)}\n"
+            "قالب هر خط: عنوان (کد): امسال | بودجه | سال قبل — واحد\n")
+    lines = []
+    for f in facts:
+        lines.append(f"{f['title']} ({f['code']}): {_num(f['act'])} | "
+                     f"{_num(f['bud'])} | {_num(f['ly'])} — {f['unit']}")
+    return head + "\n".join(lines)
+
+
+_PERSIAN_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+
+
+def _to_latin(text: str) -> str:
+    """ارقام فارسی/عربی را لاتین می‌کند تا تطبیق عدد ممکن شود."""
+    return (text or "").translate(_PERSIAN_DIGITS)
+
+
+def _matched_kpis(answer: str, facts: list[dict]) -> list[str]:
+    """کدام شاخص‌ها واقعاً در پاسخ استفاده شده‌اند (بر پایهٔ تطبیق عدد)."""
+    seen = set()
+    answer = _to_latin(answer)
+    for f in facts:
+        for v in (f["act"], f["bud"], f["ly"]):
+            if v is None:
+                continue
+            for form in {_num(v), f"{v:,.0f}", f"{v:.1f}", str(int(v)) if abs(v - round(v)) < 0.05 else ""}:
+                if form and len(form) >= 3 and form in answer:
+                    seen.add(f["code"])
+                    break
+    return sorted(seen)
+
+
+def ask(conn, question: str, branch: str | None = None, year: int = None,
+        period: str = None, model: str | None = None, meta: dict | None = None) -> dict:
+    """پرسش آزاد، ولی متصل به دادهٔ واقعی همان شعبه."""
+    from .config import DEFAULT_PERIOD, DEFAULT_YEAR, MODEL_CHAT
+    year = year or DEFAULT_YEAR
+    period = period or DEFAULT_PERIOD
+
+    guessed, explicit = detect_branch(question)
+    if branch and branch != "خودکار":
+        used_branch, explicit = branch, True
+    else:
+        used_branch = guessed or "مجتمع"
+
+    facts, _ = branch_facts(conn, used_branch, year, period)
+    if not facts:
+        facts, _ = branch_facts(conn, "مجتمع", year, period)
+        used_branch = "مجتمع"
+
+    want = model or MODEL_CHAT
+    used, subbed = pick_model(want)
+    notice = f"مدل «{want}» نصب نیست؛ با «{used}» پاسخ داده شد." if subbed else None
+
+    user_msg = (f"پرسش مدیر: {question}\n\n"
+                f"بستهٔ واقعیت:\n{facts_text(facts, used_branch, year, period)}")
+    m: dict = meta if meta is not None else {}
+    answer = _chat(used, [{"role": "system", "content": ASK_PROMPT},
+                          {"role": "user", "content": user_msg}],
+                   max_tokens=500, json_mode=False, meta=m)
+    answer = (answer or "").strip()
+    if not answer:
+        raise ValueError("پاسخ خالی برگشت" + (f" — {_hint_empty(m)}" if m else ""))
+
+    return {"branch": used_branch, "branch_explicit": explicit,
+            "answer": answer, "kpis_used": _matched_kpis(answer, facts),
+            "kpis_available": len(facts), "model": used, "model_notice": notice}
+
+
+def ask_stream(conn, question: str, branch: str | None = None, year: int = None,
+               period: str = None, model: str | None = None):
+    """همان پرسش، تدریجی. رویدادها: («نکته»|«توکن»|«پایان», مقدار)"""
+    from .config import DEFAULT_PERIOD, DEFAULT_YEAR, MODEL_CHAT
+    year = year or DEFAULT_YEAR
+    period = period or DEFAULT_PERIOD
+
+    guessed, explicit = detect_branch(question)
+    if branch and branch != "خودکار":
+        used_branch, explicit = branch, True
+    else:
+        used_branch = guessed or "مجتمع"
+    facts, _ = branch_facts(conn, used_branch, year, period)
+    if not facts:
+        facts, _ = branch_facts(conn, "مجتمع", year, period)
+        used_branch = "مجتمع"
+
+    want = model or MODEL_CHAT
+    used, subbed = pick_model(want)
+    if subbed:
+        yield ("نکته", f"مدل «{want}» نصب نیست؛ با «{used}» پاسخ داده شد.")
+    yield ("نکته", f"دادهٔ {used_branch}: {len(facts)} شاخص دورهٔ {period} {year}")
+    if not explicit:
+        yield ("نکته", f"شعبه در پرسش مشخص نبود؛ «{used_branch}» در نظر گرفته شد.")
+
+    user_msg = (f"پرسش مدیر: {question}\n\n"
+                f"بستهٔ واقعیت:\n{facts_text(facts, used_branch, year, period)}")
+    buf = []
+    for kind, val in _chat_stream(used, [{"role": "system", "content": ASK_PROMPT},
+                                         {"role": "user", "content": user_msg}]):
+        if kind == "توکن":
+            buf.append(val)
+            yield ("توکن", val)
+        elif kind == "خطا":
+            yield ("خطا", val)
+        else:
+            full = "".join(buf)
+            yield ("پایان", {"branch": used_branch, "kpis_used": _matched_kpis(full, facts),
+                             "kpis_available": len(facts), "model": used, **val})

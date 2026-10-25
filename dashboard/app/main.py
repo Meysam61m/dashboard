@@ -229,36 +229,62 @@ def ai_history(limit: int = 20):
 class AskReq(BaseModel):
     question: str
     page: str = "overview"
-    branch: str = "مجتمع"
+    branch: str = "خودکار"
+    year: int = DEFAULT_YEAR
+    period: str = DEFAULT_PERIOD
+    model: str | None = None
 
 
 @app.post("/api/ai/ask")
 def ai_ask(req: AskReq):
-    """پرسش از داده — نگاشت به شاخص‌های موجود، نه کوئری آزاد."""
+    """پرسش آزاد از دادهٔ واقعی — «نظرت در مورد شعبهٔ نیشابور چیه؟»"""
+    t0 = time.time()
     with get_db() as conn:
-        data = views.build_page(conn, req.page, req.branch, DEFAULT_YEAR, DEFAULT_PERIOD)
-        allowed = ai._fmt_set([v for k in data["bundle"]["kpis"]
-                               for v in (k.get("act"), k.get("bud"), k.get("ly"))])
-        msg = ("پرسش کاربر: " + req.question + "\n\nبستهٔ واقعیت:\n"
-               + _json.dumps(data["bundle"], ensure_ascii=False, indent=1)
-               + "\n\nفقط بر پایهٔ همین اعداد پاسخ بده. اگر پاسخ در داده نیست بگو «در داده موجود نیست»."
-                 " پاسخ را در قالب JSON با کلیدهای answer (متن) و used_kpis (فهرست کد شاخص) بده.")
         try:
-            raw = ai._chat(MODEL_CHAT, [
-                {"role": "system", "content": "تو دستیار دادهٔ مجتمع خراسان هستی. فقط از اعداد داده‌شده استفاده کن."},
-                {"role": "user", "content": msg}], max_tokens=300)
-            p = ai._parse_json(raw) or {"answer": raw, "used_kpis": []}
+            res = ai.ask(conn, req.question, branch=req.branch,
+                         year=req.year, period=req.period, model=req.model)
+            return {"status": "ok", "source": "ollama", **res,
+                    "latency_ms": int((time.time() - t0) * 1000)}
         except Exception as e:  # noqa: BLE001
-            return {"status": "offline", "error": f"{type(e).__name__}: {e}",
-                    "answer": "سرویس مدل در دسترس نیست.", "used_kpis": []}
-        v = ai.validate_numbers([str(p.get("answer", ""))], allowed,
-                                [v2 for k in data["bundle"]["kpis"]
-                                 for v2 in (k.get("act"), k.get("bud"), k.get("ly"))])
-        return {"status": "ok", "answer": p.get("answer", ""), "used_kpis": p.get("used_kpis", []),
-                "validation": v, "model": MODEL_CHAT}
+            return {"status": "error", "source": "none", "answer": "",
+                    "error": f"{type(e).__name__}: {e}",
+                    "latency_ms": int((time.time() - t0) * 1000)}
 
 
-# ── داده
+@app.post("/api/ai/ask/stream")
+def ai_ask_stream(req: AskReq):
+    """همان پرسش، تدریجی — کاربر می‌بیند مدل با داده کار می‌کند."""
+    t0 = time.time()
+
+    def gen():
+        with get_db() as conn:
+            try:
+                for kind, val in ai.ask_stream(conn, req.question, branch=req.branch,
+                                               year=req.year, period=req.period,
+                                               model=req.model):
+                    if kind == "توکن":
+                        yield _json.dumps({"t": "tok", "v": val}, ensure_ascii=False) + "\n"
+                    elif kind == "نکته":
+                        yield _json.dumps({"t": "note", "v": val}, ensure_ascii=False) + "\n"
+                    elif kind == "خطا":
+                        yield _json.dumps({"t": "err", "v": val}, ensure_ascii=False) + "\n"
+                    else:
+                        yield _json.dumps({"t": "end", "v": {**val,
+                                            "latency_ms": int((time.time() - t0) * 1000)}},
+                                          ensure_ascii=False) + "\n"
+            except Exception as e:  # noqa: BLE001
+                yield _json.dumps({"t": "err", "v": f"{type(e).__name__}: {e}"},
+                                  ensure_ascii=False) + "\n"
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/ai/branches")
+def ai_branches():
+    """فهرست شعبه‌ها برای منوی صفحهٔ گفت‌وگو."""
+    return {"items": ["خودکار"] + ai.BRANCHES}
+
 @app.get("/api/data/quality")
 def data_quality(year: int = DEFAULT_YEAR, period: str = DEFAULT_PERIOD):
     with get_db() as conn:

@@ -627,7 +627,7 @@ async function upload(f) {
 boot();
 
 /* ══════════════════════ صفحهٔ گفت‌وگو با مدل ══════════════════════ */
-const chatState = { msgs: [], busy: false, model: '' };
+const chatState = { msgs: [], busy: false, model: '', branch: 'خودکار' };
 
 async function renderChatPage() {
   const c = $('#content');
@@ -654,14 +654,19 @@ async function renderChatPage() {
     <div class="panel chat-panel">
       <div class="chat-top">
         <div class="chat-status ${h.online ? 'on' : 'off'}">${status}</div>
-        <select id="chatModel" class="btn" style="padding:6px 10px">${opts}</select>
+        <select id="chatModel" class="btn" style="padding:6px 10px" title="مدل">${opts}</select>
+        <select id="chatBranch" class="btn" style="padding:6px 10px" title="دادهٔ کدام شعبه در پاسخ استفاده شود">
+          ${['خودکار', 'مجتمع', 'شهید کاوه', 'مطهری', 'سرخس', 'لطف آباد', 'نیشابور',
+             'ماهیرود', 'دوغارون', 'بجنورد', 'بیرجند', 'باجگیران']
+            .map(b => `<option value="${b}"${(chatState.branch || 'خودکار') === b ? ' selected' : ''}>${b === 'خودکار' ? 'شعبه: خودکار' : b}</option>`).join('')}
+        </select>
         <button class="btn" id="chatPing" title="یک پیام کوتاه می‌فرستد">آزمون اتصال</button>
         <button class="btn primary" id="chatTest" title="پنج مرحله را جدا بررسی می‌کند">آزمون کامل</button>
         <button class="btn" id="chatClear">پاک کردن</button>
       </div>
       <div id="chatLog" class="chat-log"></div>
       <div class="chat-in">
-        <textarea id="chatText" rows="2" placeholder="سؤالی بپرسید… مثلاً: وضعیت ناوگان چطور است؟ (Enter برای ارسال)"></textarea>
+        <textarea id="chatText" rows="2" placeholder="مثلاً: نظرت در مورد شعبهٔ نیشابور چیه؟ (Enter برای ارسال)"></textarea>
         <button class="btn primary" id="chatSend">ارسال</button>
       </div>
       <div class="chat-foot">
@@ -685,6 +690,7 @@ async function renderChatPage() {
   $('#chatPing').onclick = pingModel;
   $('#chatTest').onclick = runSelfTest;
   $('#chatModel').onchange = e => { chatState.model = e.target.value; };
+  $('#chatBranch').onchange = e => { chatState.branch = e.target.value; };
   $('#chatText')?.focus();
 }
 
@@ -772,14 +778,19 @@ async function sendChat() {
   }, 400);
 
   let acc = '';
+  const greeting = /^\s*(سلام|درود|وقت بخیر|خسته نباشی|ممنون|مرسی)[\s.!؟،]*$/i.test(text);
+  const grounded = !greeting;
   try {
-    const resp = await fetch('/api/ai/chat/stream', {
+    const url = grounded ? '/api/ai/ask/stream' : '/api/ai/chat/stream';
+    const body = grounded
+      ? { question: text, branch: $('#chatBranch')?.value || 'خودکار',
+          model: $('#chatModel')?.value || null }
+      : { model: $('#chatModel')?.value || null,
+          messages: [{ role: 'system', content: 'تو دستیار مدیرعامل مجتمع انبارهای عمومی خراسان هستی. فارسی، کوتاه و شفاف پاسخ بده.' },
+                     ...chatState.msgs] };
+    const resp = await fetch(url, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: $('#chatModel')?.value || null,
-        messages: [{ role: 'system', content: 'تو دستیار مدیرعامل مجتمع انبارهای عمومی خراسان هستی. فارسی، کوتاه و شفاف پاسخ بده.' },
-                   ...chatState.msgs]
-      })
+      body: JSON.stringify(body)
     });
     if (!resp.ok || !resp.body) throw new Error('HTTP ' + resp.status);
 
@@ -799,7 +810,12 @@ async function sendChat() {
           acc += ev.v; bot.textContent = acc;
           $('#chatLog').scrollTop = $('#chatLog').scrollHeight;
         } else if (ev.t === 'note') {
-          addBubble('sys', ev.v);
+          // یادداشت بالای پاسخ همان سؤال قرار بگیرد، نه پایین آن
+          const n = document.createElement('div');
+          n.className = 'bubble sys';
+          n.textContent = ev.v;
+          bot.parentNode.insertBefore(n, bot);
+          const lg = $('#chatLog'); lg.scrollTop = lg.scrollHeight;
         } else if (ev.t === 'err') {
           bot.classList.remove('typing'); bot.classList.add('err');
           bot.textContent = 'خطا: ' + ev.v;
@@ -810,9 +826,13 @@ async function sendChat() {
           clearInterval(iv);
           bot.classList.remove('typing');
           const v = ev.v || {};
-          meta.textContent = `مدل ${v.model_used || ''} · ${fa(v.seconds || 0)} ثانیه` +
-            (v.first_ms ? ` · اولین کلمه در ${fa((v.first_ms / 1000).toFixed(1))} ثانیه` : '') +
-            (v.tps ? ` · ${fa(v.tps)} توکن/ثانیه` : '');
+          meta.textContent = [
+            v.model_used || v.model ? `مدل ${v.model_used || v.model}` : '',
+            v.branch ? `شعبه ${v.branch}` : '',
+            v.kpis_available ? `بر پایهٔ ${fa(v.kpis_available)} شاخص` : '',
+            v.kpis_used?.length ? `${fa(v.kpis_used.length)} شاخص نقل شد` : '',
+            fa(v.seconds || 0) + ' ثانیه']
+            .filter(Boolean).join(' · ');
           chatState.msgs.push({ role: 'assistant', content: acc });
         }
       }
