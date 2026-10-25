@@ -25,6 +25,7 @@ const PAGES = [
   { k: 'ops', t: 'عملیات و تناژ', i: '⇄', g: '' },
   { k: 'prj', t: 'پروژه‌ها', i: '◆', g: '' },
   { k: 'data', t: 'کیفیت و ورود داده', i: '⚙', g: 'سیستم' },
+  { k: 'chat', t: 'گفت‌وگو با مدل', i: '❝', g: 'سیستم' },
 ];
 
 const state = { page: 'overview', branch: 'مجتمع', year: 1405, period: 'H1', meta: null, ai: null };
@@ -120,6 +121,7 @@ async function checkAI() {
 
 /* ───────────────────────── بارگذاری صفحه */
 async function load() {
+  if (state.page === 'chat') { renderChatPage(); return; }
   const c = $('#content');
   c.innerHTML = `<div class="panel"><div class="skel w60"></div><div class="skel w90"></div><div class="skel w75"></div></div>`;
   const q = new URLSearchParams({ page: state.page, branch: state.branch, year: state.year, period: state.period });
@@ -379,32 +381,41 @@ function aiPanel(data) {
         ${modelOpt(h, 'chat', 'سریع')}
         ${modelOpt(h, 'deep', 'عمیق')}
       </select>
-      <button class="btn primary" id="aiRun">تولید تحلیل</button>
+      <button class="btn primary" id="aiRun">تحلیل کوتاه</button>
+      <button class="btn" id="aiRunFull" title="تحلیل کامل با همهٔ بخش‌ها — کندتر">کامل</button>
       <span class="ai-meta" id="aiTimer"></span>
     </div>
     <div id="aiBanner">${online
       ? `<div class="banner ok">متصل به Ollama روی <b>${esc(h.host)}</b> — تحلیل از روی اعداد همین صفحه و بدون تماس با اینترنت تولید می‌شود.</div>`
       : `<div class="banner warn"><b>Ollama در دسترس نیست</b> (${esc(h.host)})${h.error_text ? ' — ' + esc(h.error_text) : ''}.
          <br><span style="opacity:.8">داشبورد و همهٔ شاخص‌ها کار می‌کنند؛ دکمهٔ «تولید تحلیل» یک تحلیل قاعده‌محور (بدون مدل زبانی) می‌سازد.</span></div>`}</div>
-    <div id="aiBody" class="ai-body"><div class="sub">برای دیدن تحلیل، دکمهٔ «تولید تحلیل» را بزنید. روی CPU ممکن است تا چند دقیقه طول بکشد؛ نتیجه ذخیره می‌شود.</div></div>`;
+    <div class="ai-hint">
+      <b>تحلیل کوتاه</b> فقط همین بخش را می‌خواند: یک تیتر و چند نکته، سریع‌تر.
+      <b>کامل</b> همهٔ شاخص‌های صفحه را می‌بیند و طولانی‌تر است.
+    </div>
+    <div id="aiBody" class="ai-body"><div class="sub">دکمهٔ «تحلیل کوتاه» را بزنید. روی CPU ممکن است ۳۰ تا ۹۰ ثانیه طول بکشد؛ نتیجه ذخیره می‌شود.</div></div>`;
   setTimeout(() => {
     const b = p.querySelector('#aiRun');
-    if (b) b.onclick = runAI;
+    if (b) b.onclick = () => runAI('quick');
+    const bf = p.querySelector('#aiRunFull');
+    if (bf) bf.onclick = () => runAI('full');
   }, 0);
   return p;
 }
 
-async function runAI() {
+async function runAI(mode = 'quick') {
   const btn = document.querySelector('#aiRun');
   const body = document.querySelector('#aiBody');
   const timer = document.querySelector('#aiTimer');
   const model = document.querySelector('#aiModel')?.value || null;
   btn.disabled = true; btn.innerHTML = 'در حال تولید<span class="spin"></span>';
+  const bf0 = document.querySelector('#aiRunFull'); if (bf0) bf0.disabled = true;
   body.innerHTML = `<div class="skel w90"></div><div class="skel w75"></div><div class="skel w90"></div><div class="skel w60"></div>`;
   const t0 = Date.now();
   const iv = setInterval(() => timer.textContent = fa(Math.floor((Date.now() - t0) / 1000)) + ' ثانیه', 500);
   try {
-    const r = await fetch('/api/ai/analyze', {
+    const url = mode === 'quick' ? '/api/ai/quick' : '/api/ai/analyze';
+    const r = await fetch(url, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ page: state.page, branch: state.branch, year: state.year, period: state.period, model, force: true })
     });
@@ -415,6 +426,7 @@ async function runAI() {
   } finally {
     clearInterval(iv); timer.textContent = '';
     btn.disabled = false; btn.textContent = 'تحلیل مجدد';
+    const bf2 = document.querySelector('#aiRunFull'); if (bf2) bf2.disabled = false;
   }
 }
 
@@ -601,3 +613,173 @@ async function upload(f) {
 }
 
 boot();
+
+/* ══════════════════════ صفحهٔ گفت‌وگو با مدل ══════════════════════ */
+const chatState = { msgs: [], busy: false, model: '' };
+
+async function renderChatPage() {
+  const c = $('#content');
+  $('#pageTitle').textContent = 'گفت‌وگو با مدل';
+  $('#pageEn').textContent = 'Local Model Chat';
+  c.innerHTML = `<div class="panel"><div class="skel w60"></div><div class="skel w90"></div></div>`;
+  const h = await (await fetch('/api/ai/health')).json();
+  state.ai = h;
+
+  const opts = (() => {
+    const rows = [{ v: '', n: 'توصیهٔ برنامه (خودکار)', ok: true }];
+    ['analysis', 'chat', 'deep'].forEach(k => {
+      if (!h.configured?.[k]) return;
+      rows.push({ v: h.configured[k], n: h.configured[k], ok: !!h.installed?.[k] });
+    });
+    return rows.map(r => `<option value="${esc(r.v)}"${r.ok ? '' : ' disabled'}>${esc(r.n)}${r.ok ? '' : ' (نصب نیست)'}</option>`).join('');
+  })();
+
+  const status = h.online
+    ? `<span class="dot on"></span> متصل — ${esc(h.host)}${h.latency_ms != null ? ' · ' + fa(h.latency_ms) + ' میلی‌ثانیه' : ''}`
+    : `<span class="dot off"></span> قطع — ${esc(h.error_text || 'پاسخ نداد')}`;
+
+  c.innerHTML = `
+    <div class="panel chat-panel">
+      <div class="chat-top">
+        <div class="chat-status ${h.online ? 'on' : 'off'}">${status}</div>
+        <select id="chatModel" class="btn" style="padding:6px 10px">${opts}</select>
+        <button class="btn" id="chatPing" title="آزمون سریع اتصال">آزمون اتصال</button>
+        <button class="btn" id="chatClear">پاک کردن</button>
+      </div>
+      <div id="chatLog" class="chat-log"></div>
+      <div class="chat-in">
+        <textarea id="chatText" rows="2" placeholder="سؤالی بپرسید… مثلاً: وضعیت ناوگان چطور است؟ (Enter برای ارسال)"></textarea>
+        <button class="btn primary" id="chatSend">ارسال</button>
+      </div>
+      <div class="chat-foot">
+        <span id="chatMeta"></span>
+        <span style="opacity:.65">پاسخ‌ها از مدل محلی روی همین رایانه می‌آید؛ چیزی به اینترنت نمی‌رود.</span>
+      </div>
+    </div>`;
+
+  const log = $('#chatLog');
+  if (!chatState.msgs.length) {
+    addBubble('sys', h.online
+      ? `آماده است. مدل روی ${h.host} پاسخ می‌دهد. اولین پاسخ ممکن است ۳۰ تا ۹۰ ثانیه طول بکشد (بارگذاری مدل روی CPU).`
+      : `مدل در دسترس نیست: ${h.error_text || '—'}\nدکمهٔ «آزمون اتصال» را بزنید یا در نوار کناری «عیب‌یابی» را باز کنید.`);
+  } else chatState.msgs.forEach(m => addBubble(m.role, m.content));
+
+  $('#chatSend').onclick = sendChat;
+  $('#chatText').onkeydown = e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
+  };
+  $('#chatClear').onclick = () => { chatState.msgs = []; renderChatPage(); };
+  $('#chatPing').onclick = pingModel;
+  $('#chatModel').onchange = e => { chatState.model = e.target.value; };
+  $('#chatText')?.focus();
+}
+
+function addBubble(kind, text) {
+  const log = $('#chatLog'); if (!log) return null;
+  const b = document.createElement('div');
+  b.className = 'bubble ' + kind;
+  b.textContent = text;
+  log.appendChild(b);
+  log.scrollTop = log.scrollHeight;
+  return b;
+}
+
+async function pingModel() {
+  const btn = $('#chatPing');
+  btn.disabled = true; btn.textContent = 'در حال آزمون…';
+  const t0 = Date.now();
+  const iv = setInterval(() => btn.textContent = 'آزمون ' + fa(Math.floor((Date.now() - t0) / 1000)) + ' ث', 400);
+  try {
+    const r = await (await fetch('/api/ai/chat', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: $('#chatModel')?.value || null,
+        messages: [{ role: 'user', content: 'فقط بنویس: متصل هستم' }] })
+    })).json();
+    clearInterval(iv);
+    if (r.status === 'ok') {
+      addBubble('sys', `✓ اتصال برقرار است — مدل ${r.model} در ${(r.latency_ms / 1000).toFixed(1)} ثانیه پاسخ داد.\nپاسخ: «${(r.reply || '').slice(0, 120)}»`);
+    } else {
+      addBubble('err', `✗ اتصال برقرار نشد.\n${r.error || ''}`);
+    }
+  } catch (e) {
+    clearInterval(iv);
+    addBubble('err', `✗ خطای شبکه: ${e.message}`);
+  } finally {
+    clearInterval(iv); btn.disabled = false; btn.textContent = 'آزمون اتصال';
+  }
+}
+
+async function sendChat() {
+  if (chatState.busy) return;
+  const ta = $('#chatText');
+  const text = (ta.value || '').trim();
+  if (!text) return;
+  ta.value = '';
+  chatState.busy = true;
+
+  chatState.msgs.push({ role: 'user', content: text });
+  addBubble('me', text);
+
+  const bot = addBubble('ai', '');
+  bot.classList.add('typing');
+  const t0 = Date.now();
+  const meta = $('#chatMeta');
+  const iv = setInterval(() => {
+    const s = Math.floor((Date.now() - t0) / 1000);
+    meta.textContent = (bot.textContent ? 'در حال نوشتن… ' : 'در انتظار پاسخ… ') + fa(s) + ' ثانیه';
+  }, 400);
+
+  let acc = '';
+  try {
+    const resp = await fetch('/api/ai/chat/stream', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: $('#chatModel')?.value || null,
+        messages: [{ role: 'system', content: 'تو دستیار مدیرعامل مجتمع انبارهای عمومی خراسان هستی. فارسی، کوتاه و شفاف پاسخ بده.' },
+                   ...chatState.msgs]
+      })
+    });
+    if (!resp.ok || !resp.body) throw new Error('HTTP ' + resp.status);
+
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const ln of lines) {
+        if (!ln.trim()) continue;
+        let ev; try { ev = JSON.parse(ln); } catch { continue; }
+        if (ev.t === 'tok') {
+          acc += ev.v; bot.textContent = acc;
+          $('#chatLog').scrollTop = $('#chatLog').scrollHeight;
+        } else if (ev.t === 'err') {
+          bot.classList.remove('typing'); bot.classList.add('err');
+          bot.textContent = 'خطا: ' + ev.v;
+          chatState.busy = false; clearInterval(iv);
+          meta.textContent = '';
+          return;
+        } else if (ev.t === 'end') {
+          clearInterval(iv);
+          bot.classList.remove('typing');
+          const v = ev.v || {};
+          meta.textContent = `مدل ${v.model_used || ''} · ${fa(v.seconds || 0)} ثانیه` +
+            (v.first_ms ? ` · اولین کلمه در ${fa((v.first_ms / 1000).toFixed(1))} ثانیه` : '') +
+            (v.tps ? ` · ${fa(v.tps)} توکن/ثانیه` : '');
+          chatState.msgs.push({ role: 'assistant', content: acc });
+        }
+      }
+    }
+    bot.classList.remove('typing');
+  } catch (e) {
+    bot.classList.remove('typing'); bot.classList.add('err');
+    bot.textContent = 'ارتباط با سرور قطع شد: ' + e.message;
+  } finally {
+    clearInterval(iv);
+    chatState.busy = false;
+    if (meta && !meta.textContent) meta.textContent = '';
+  }
+}

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import io
+import json as _json
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -111,6 +113,76 @@ class AnalyzeReq(BaseModel):
     force: bool = False
 
 
+class ChatMsg(BaseModel):
+    role: str
+    content: str
+
+
+class ChatReq(BaseModel):
+    messages: list[ChatMsg]
+    model: str | None = None
+
+
+@app.post("/api/ai/chat")
+def ai_chat(req: ChatReq):
+    """گفت‌وگوی آزاد با مدل — برای آزمودن اتصال و پرسش‌های عمومی."""
+    want = req.model or MODEL_CHAT
+    used, subbed = ai.pick_model(want)
+    msgs = [{"role": m.role, "content": m.content} for m in req.messages]
+    t0 = time.time()
+    try:
+        raw = ai._chat(used, msgs, max_tokens=600, json_mode=False)
+        return {"status": "ok", "source": "ollama", "model": used,
+                "model_notice": (f"مدل «{want}» نصب نیست؛ با «{used}» پاسخ داده شد."
+                                 if subbed else None),
+                "reply": raw, "latency_ms": int((time.time() - t0) * 1000)}
+    except Exception as e:  # noqa: BLE001
+        return {"status": "error", "source": "none", "model": used,
+                "reply": "", "error": f"{type(e).__name__}: {e}",
+                "latency_ms": int((time.time() - t0) * 1000)}
+
+
+@app.post("/api/ai/chat/stream")
+def ai_chat_stream(req: ChatReq):
+    """همان گفت‌وگو، ولی تدریجی (NDJSON) — کاربر می‌بیند مدل واقعاً کار می‌کند."""
+    want = req.model or MODEL_CHAT
+    used, _ = ai.pick_model(want)
+
+    def gen():
+        first = True
+        for kind, val in ai._chat_stream(used, [{"role": m.role, "content": m.content}
+                                                for m in req.messages]):
+            if kind == "توکن":
+                yield _json.dumps({"t": "tok", "v": val}, ensure_ascii=False) + "\n"
+            elif kind == "خطا":
+                yield _json.dumps({"t": "err", "v": val}, ensure_ascii=False) + "\n"
+            else:
+                yield _json.dumps({"t": "end", "v": {**val, "model_used": used}},
+                                                ensure_ascii=False) + "\n"
+            first = False
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+class QuickReq(BaseModel):
+    page: str = "flt"
+    branch: str = "مجتمع"
+    year: int = DEFAULT_YEAR
+    period: str = DEFAULT_PERIOD
+    model: str | None = None
+
+
+@app.post("/api/ai/quick")
+def ai_quick(req: QuickReq):
+    """تحلیل کوتاه یک دامنه — مثلاً فقط ماشین‌آلات."""
+    with get_db() as conn:
+        data = views.build_page(conn, req.page, req.branch, req.year, req.period)
+        return ai.quick(conn, f"q:{req.page}:{req.branch}:{req.year}:{req.period}",
+                        f"{data['title']} — {req.branch}", data["bundle"],
+                        model=req.model, focus=req.page)
+
+
 @app.post("/api/ai/analyze")
 def ai_analyze(req: AnalyzeReq):
     with get_db() as conn:
@@ -145,7 +217,7 @@ def ai_ask(req: AskReq):
         allowed = ai._fmt_set([v for k in data["bundle"]["kpis"]
                                for v in (k.get("act"), k.get("bud"), k.get("ly"))])
         msg = ("پرسش کاربر: " + req.question + "\n\nبستهٔ واقعیت:\n"
-               + __import__("json").dumps(data["bundle"], ensure_ascii=False, indent=1)
+               + _json.dumps(data["bundle"], ensure_ascii=False, indent=1)
                + "\n\nفقط بر پایهٔ همین اعداد پاسخ بده. اگر پاسخ در داده نیست بگو «در داده موجود نیست»."
                  " پاسخ را در قالب JSON با کلیدهای answer (متن) و used_kpis (فهرست کد شاخص) بده.")
         try:

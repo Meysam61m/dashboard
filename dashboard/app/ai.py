@@ -45,6 +45,17 @@ SYSTEM_PROMPT = """تو یک تحلیل‌گر مالی و عملیاتی برا
 پاسخ باید با { شروع شود و با } تمام شود. هیچ متنی پیش یا پس از JSON ننویس."""
 
 
+SHORT_PROMPT = """تو تحلیل‌گر مالی و عملیاتی مجتمع انبارهای عمومی خراسان هستی.
+فقط بر پایهٔ «بستهٔ واقعیت» بنویس. هیچ عددی که در بسته نیست ننویس. هیچ محاسبهٔ تازه‌ای نکن.
+
+کوتاه بنویس، مثل یک پیام مدیر به مدیر:
+- headline: یک جمله، حداکثر ۱۸ کلمه
+- findings: حداکثر ۱ مورد
+- drivers، risks، actions: هر کدام حداکثر ۱ مورد
+- data_gaps: حداکثر ۱ مورد
+هر رشته حداکثر ۱۲ کلمه. پاسخ فقط JSON، بدون متن اضافه، بدون بلوک کد."""
+
+
 # ── کمکی‌ها
 FA_DIGITS = "۰۱۲۳۴۵۶۷۸۹"
 
@@ -402,13 +413,12 @@ def _body_error(code: int, txt: str) -> str:
 
 
 def _chat(model: str, messages: list[dict], max_tokens: int = AI_MAX_TOKENS,
-          meta: dict | None = None) -> str:
+          meta: dict | None = None, json_mode: bool = True) -> str:
     """متن پاسخ. اگر meta داده شود، علت پایان تولید (length = بریدگی) در آن نوشته می‌شود."""
     body = {
         "model": model,
         "messages": messages,
         "stream": False,
-        "format": "json",
         "keep_alive": OLLAMA_KEEP_ALIVE,
         "options": {
             "temperature": AI_TEMPERATURE,
@@ -417,6 +427,8 @@ def _chat(model: str, messages: list[dict], max_tokens: int = AI_MAX_TOKENS,
             "top_p": 0.9,
         },
     }
+    if json_mode:
+        body["format"] = "json"
     code, txt = _http(f"{host()}/api/chat", body, timeout=OLLAMA_TIMEOUT)
     if code == 404:
         detail = _body_error(code, txt)
@@ -433,6 +445,58 @@ def _chat(model: str, messages: list[dict], max_tokens: int = AI_MAX_TOKENS,
         meta["done_reason"] = data.get("done_reason") or ""
         meta["eval_count"] = data.get("eval_count")
     return (data.get("message") or {}).get("content", "") or ""
+
+
+def _chat_stream(model: str, messages: list[dict], max_tokens: int = 700):
+    """جریان تدریجی پاسخ. رویدادها: («توکن», متن) / («پایان», meta) / («خطا», پیام)."""
+    body = {
+        "model": model, "messages": messages, "stream": True,
+        "keep_alive": OLLAMA_KEEP_ALIVE,
+        "options": {"temperature": 0.3, "num_predict": max_tokens, "num_ctx": 8192},
+    }
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    req = _urlreq.Request(f"{host()}/api/chat", data=data, method="POST", headers={
+        "Content-Type": "application/json; charset=utf-8", "Accept": "application/x-ndjson"})
+
+    t0 = time.time()
+    first = None
+    n_tok = 0
+    try:
+        with _OPENER.open(req, timeout=OLLAMA_TIMEOUT) as r:
+            for line in r:
+                line = line.strip()
+                if not line:
+                    continue
+                j = _json_or_none(line.decode("utf-8", "replace"))
+                if not j:
+                    continue
+                if j.get("error"):
+                    yield ("خطا", str(j["error"]))
+                    return
+                piece = (j.get("message") or {}).get("content", "")
+                if piece:
+                    if first is None:
+                        first = (time.time() - t0) * 1000
+                    n_tok += 1
+                    yield ("توکن", piece)
+                if j.get("done"):
+                    el = time.time() - t0
+                    yield ("پایان", {
+                        "model": model,
+                        "seconds": round(el, 1),
+                        "first_ms": int(first or 0),
+                        "tokens": j.get("eval_count") or n_tok,
+                        "tps": round((j.get("eval_count") or n_tok) / el, 1) if el > 0 else None,
+                        "done_reason": j.get("done_reason"),
+                    })
+                    return
+        yield ("پایان", {"model": model, "seconds": round(time.time() - t0, 1), "tokens": n_tok})
+    except _urlerr.HTTPError as e:
+        yield ("خطا", _body_error(e.code, e.read().decode("utf-8", "replace")))
+    except TimeoutError:
+        yield ("خطا", "پاسخ در زمان مقرر نرسید — مدل مشغول بارگذاری است یا صفحه شلوغ است")
+    except Exception as e:  # noqa: BLE001
+        yield ("خطا", f"{type(e).__name__}: {e}")
 
 
 def _generate(model: str, messages: list[dict], options: dict) -> str:
@@ -713,6 +777,56 @@ def analyze(conn, scope_key: str, scope_label: str, bundle: dict,
                 "raw_excerpt": (raw or "")[:400] or None,
                 "created": datetime.now().isoformat(timespec="seconds"),
                 "payload": payload, "validation": v, "error": err, "cached": False}
+
+
+def quick(conn, scope_key: str, scope_label: str, bundle: dict,
+          model: str | None = None, focus: str | None = None) -> dict:
+    """تحلیل کوتاه یک‌شات: یک تیتر و چند نکته. برای تحلیل بخشی (مثلاً فقط ناوگان)."""
+    from .db import current_version
+
+    want = model or MODEL_ANALYSIS
+    used, subbed = pick_model(want)
+    notice = (f"مدل «{want}» نصب نیست؛ با «{used}» انجام شد." if subbed else None)
+
+    vals = [v for k in bundle.get("kpis", [])
+            for v in (k.get("act"), k.get("bud"), k.get("ly"))] + list(bundle.get("extra_numbers", []))
+    allowed = _fmt_set(vals)
+
+    user = (f"دامنه: {scope_label}\nدوره: {bundle.get('period_label')}\n\n"
+            "بستهٔ واقعیت (تنها منبع مجاز اعداد):\n"
+            + json.dumps(bundle, ensure_ascii=False)
+            + "\n\nتحلیل کوتاه را در قالب JSON بنویس.")
+
+    t0 = time.time()
+    raw = ""
+    try:
+        meta: dict = {}
+        raw = _chat(used, [{"role": "system", "content": SHORT_PROMPT},
+                           {"role": "user", "content": user}], max_tokens=420, meta=meta)
+        payload = _parse_json(raw)
+        if payload is None and meta.get("done_reason") == "length":
+            raw = _chat(used, [{"role": "system", "content": SHORT_PROMPT},
+                               {"role": "user", "content": user + "\nفقط یک جمله بنویس."}],
+                        max_tokens=260, meta=meta)
+            payload = _parse_json(raw)
+        if payload is None:
+            raise ValueError("پاسخ مدل JSON معتبر نبود")
+        payload = _normalize(payload)
+        v = validate_numbers(_all_texts(payload), allowed, vals)
+        return {"status": "ok", "source": "ollama", "model": used,
+                "model_requested": want, "model_notice": notice, "mode": "quick",
+                "focus": focus, "created": datetime.now().isoformat(timespec="seconds"),
+                "payload": payload, "validation": v, "raw": raw[:600],
+                "latency_ms": int((time.time() - t0) * 1000), "cached": False}
+    except Exception as e:  # noqa: BLE001
+        payload = rules_narrative(bundle, [])
+        v = validate_numbers(_all_texts(payload), allowed, vals)
+        return {"status": "fallback", "source": "rules", "model": "قاعده‌محور",
+                "model_requested": want, "model_notice": notice, "mode": "quick",
+                "focus": focus, "created": datetime.now().isoformat(timespec="seconds"),
+                "payload": payload, "validation": v, "raw": raw[:600] or None,
+                "error": f"{type(e).__name__}: {e}",
+                "latency_ms": int((time.time() - t0) * 1000), "cached": False}
 
 
 def build_bundle(rows: list[dict], period_label: str, extra=None) -> dict:
