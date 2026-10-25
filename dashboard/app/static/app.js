@@ -655,7 +655,8 @@ async function renderChatPage() {
       <div class="chat-top">
         <div class="chat-status ${h.online ? 'on' : 'off'}">${status}</div>
         <select id="chatModel" class="btn" style="padding:6px 10px">${opts}</select>
-        <button class="btn" id="chatPing" title="آزمون سریع اتصال">آزمون اتصال</button>
+        <button class="btn" id="chatPing" title="یک پیام کوتاه می‌فرستد">آزمون اتصال</button>
+        <button class="btn primary" id="chatTest" title="پنج مرحله را جدا بررسی می‌کند">آزمون کامل</button>
         <button class="btn" id="chatClear">پاک کردن</button>
       </div>
       <div id="chatLog" class="chat-log"></div>
@@ -682,6 +683,7 @@ async function renderChatPage() {
   };
   $('#chatClear').onclick = () => { chatState.msgs = []; renderChatPage(); };
   $('#chatPing').onclick = pingModel;
+  $('#chatTest').onclick = runSelfTest;
   $('#chatModel').onchange = e => { chatState.model = e.target.value; };
   $('#chatText')?.focus();
 }
@@ -721,6 +723,31 @@ async function pingModel() {
   }
 }
 
+async function runSelfTest() {
+  const btn = $('#chatTest');
+  if (!btn) return;
+  btn.disabled = true; btn.textContent = 'در حال آزمون…';
+  const t0 = Date.now();
+  const iv = setInterval(() => btn.textContent = 'آزمون ' + fa(Math.floor((Date.now() - t0) / 1000)) + ' ث', 400);
+  addBubble('sys', 'آزمون کامل شروع شد: پنج مرحله — پورت، سرویس، مدل، پاسخ ساده، پاسخ جریانی. تا یک دقیقه صبر کنید.');
+  try {
+    const r = await (await fetch('/api/ai/selftest' + (chatState.model ? '?model=' + encodeURIComponent(chatState.model) : ''))).json();
+    clearInterval(iv);
+    const lines = (r.steps || []).map(st =>
+      `${st.ok ? '✓' : '✗'} ${st.name}  —  ${(st.ms / 1000).toFixed(1)} ثانیه\n     ${st.detail || ''}`).join('\n');
+    addBubble(r.ok ? 'sys' : 'err',
+      (r.ok ? 'همه‌چیز سالم است. مدل: ' + r.model : 'این مرحله شکست خورد:') +
+      '\n\n' + lines +
+      (r.hint ? '\n\nراه‌حل: ' + r.hint : '') +
+      (r.substituted_from ? `\n\n(مدل درخواستی ${r.substituted_from} نبود؛ با ${r.model} آزموده شد)` : ''));
+  } catch (e) {
+    clearInterval(iv);
+    addBubble('err', 'آزمون اجرا نشد: ' + e.message);
+  } finally {
+    clearInterval(iv); btn.disabled = false; btn.textContent = 'آزمون کامل';
+  }
+}
+
 async function sendChat() {
   if (chatState.busy) return;
   const ta = $('#chatText');
@@ -738,7 +765,9 @@ async function sendChat() {
   const meta = $('#chatMeta');
   const iv = setInterval(() => {
     const s = Math.floor((Date.now() - t0) / 1000);
-    meta.textContent = (bot.textContent ? 'در حال نوشتن… ' : 'در انتظار پاسخ… ') + fa(s) + ' ثانیه';
+    meta.textContent = bot.textContent
+      ? 'در حال نوشتن… ' + fa(s) + ' ثانیه'
+      : (s < 3 ? 'در حال ارسال…' : 'مدل در حال بارگذاری است (بار اول تا ۶۰ ثانیه)… ' + fa(s) + ' ثانیه');
   }, 400);
 
   let acc = '';
@@ -768,6 +797,8 @@ async function sendChat() {
         if (ev.t === 'tok') {
           acc += ev.v; bot.textContent = acc;
           $('#chatLog').scrollTop = $('#chatLog').scrollHeight;
+        } else if (ev.t === 'note') {
+          addBubble('sys', ev.v);
         } else if (ev.t === 'err') {
           bot.classList.remove('typing'); bot.classList.add('err');
           bot.textContent = 'خطا: ' + ev.v;

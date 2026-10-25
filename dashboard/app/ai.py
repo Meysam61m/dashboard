@@ -198,21 +198,35 @@ def _candidates() -> list[str]:
 
 
 _MODELS_CACHE: list[str] | None = None
+_MODELS_AT: float = 0.0
+_MODELS_TTL = 30.0          # فهرست مدل‌ها بیش از ۳۰ ثانیه کهنه نمی‌ماند
 
 
 def known_models(refresh: bool = False) -> list[str]:
-    """فهرست مدل‌های نصب‌شده؛ یک‌بار خوانده و نگه داشته می‌شود."""
-    global _MODELS_CACHE
-    if _MODELS_CACHE is None or refresh:
+    """فهرست مدل‌های نصب‌شده.
+
+    نکتهٔ مهم: نتیجهٔ خالی کش نمی‌شود. اگر Ollama هنوز بالا نیامده باشد،
+    کشِ خالی باعث می‌شد برنامه تا ابد مدل اشتباه انتخاب کند.
+    """
+    global _MODELS_CACHE, _MODELS_AT
+    stale = (time.time() - _MODELS_AT) > _MODELS_TTL
+    if refresh or _MODELS_CACHE is None or stale:
         h = health()
-        _MODELS_CACHE = h.get("models") or []
-    return _MODELS_CACHE
+        got = h.get("models") or []
+        if got:                       # فقط نتیجهٔ موفق کش می‌شود
+            _MODELS_CACHE = got
+            _MODELS_AT = time.time()
+        elif _MODELS_CACHE is None:
+            _MODELS_CACHE = []
+    return _MODELS_CACHE or []
 
 
-def pick_model(want: str) -> tuple[str, bool]:
+def pick_model(want: str, refresh: bool = False) -> tuple[str, bool]:
     """اگر مدل درخواستی نصب نباشد، بهترین مدلِ موجود به‌جایش برگردانده می‌شود.
     خروجی: (مدل انتخابی، آیا جایگزین شده)"""
-    names = known_models()
+    names = known_models(refresh=refresh)
+    if not names:
+        names = known_models(refresh=True)
     if not names or _has_model(names, want):
         return want, False
     for alt in (MODEL_ANALYSIS, MODEL_CHAT, MODEL_DEEP):
@@ -329,6 +343,86 @@ def warmup(model: str | None = None) -> dict:
         return {"ok": False, "model": m, "error": f"{type(e).__name__}: {e}"}
 
 
+def selftest(model: str | None = None) -> dict:
+    """آزمون گام‌به‌گام با زمان هر مرحله. دقیقاً می‌گوید کجا شکست خورد."""
+    steps = []
+
+    def step(name, ok, ms, detail=""):
+        steps.append({"name": name, "ok": ok, "ms": int(ms), "detail": detail})
+        return ok
+
+    t = time.time()
+    ok_tcp = False
+    try:
+        hp = host().split("//")[-1].split(":")
+        h_ = hp[0]
+        p_ = int(hp[1]) if len(hp) > 1 else 11434
+        with _socket.create_connection((h_, p_), timeout=3):
+            ok_tcp = True
+        step("۱. پورت باز است", True, (time.time() - t) * 1000, f"{h_}:{p_}")
+    except Exception as e:  # noqa: BLE001
+        step("۱. پورت باز است", False, (time.time() - t) * 1000, f"{type(e).__name__}: {e}")
+        return {"ok": False, "steps": steps}
+
+    t = time.time()
+    try:
+        code, txt = _http(f"{host()}/api/tags", timeout=6)
+        names = [m.get("name") for m in (_json_or_none(txt) or {}).get("models", [])]
+        step("۲. سرویس پاسخ می‌دهد", code == 200, (time.time() - t) * 1000,
+             f"HTTP {code} — {len(names)} مدل")
+    except Exception as e:  # noqa: BLE001
+        step("۲. سرویس پاسخ می‌دهد", False, (time.time() - t) * 1000, f"{type(e).__name__}: {e}")
+        return {"ok": False, "steps": steps}
+
+    t = time.time()
+    want = model or MODEL_ANALYSIS
+    used, subbed = pick_model(want, refresh=True)
+    exists = _has_model(names, used)
+    step("۳. انتخاب مدل", exists, (time.time() - t) * 1000,
+         f"{used}" + (f" (به‌جای {want})" if subbed else ""))
+    if not exists:
+        return {"ok": False, "steps": steps,
+                "hint": f"هیچ مدلی نصب نیست. اجرا کنید: ollama pull {MODEL_ANALYSIS}"}
+
+    # ۴) پرسش بدون جریان
+    t = time.time()
+    try:
+        out = _chat(used, [{"role": "user", "content": "فقط بنویس: سلام"}],
+                    max_tokens=16, json_mode=False)
+        ok4 = bool(out.strip())
+        step("۴. پاسخ ساده (بدون جریان)", ok4, (time.time() - t) * 1000,
+             f"«{out.strip()[:60]}»" if ok4 else "پاسخ خالی برگشت")
+    except Exception as e:  # noqa: BLE001
+        step("۴. پاسخ ساده (بدون جریان)", False, (time.time() - t) * 1000,
+             f"{type(e).__name__}: {str(e)[:160]}")
+        return {"ok": False, "steps": steps, "model": used}
+
+    # ۵) پرسش با جریان
+    t = time.time()
+    got = ""
+    first_ms = 0
+    err = ""
+    try:
+        for kind, val in _chat_stream(used, [{"role": "user", "content": "فقط بنویس: سلام"}],
+                                      max_tokens=16):
+            if kind == "توکن":
+                if not got:
+                    first_ms = int((time.time() - t) * 1000)
+                got += val
+            elif kind == "خطا":
+                err = str(val)
+                break
+            elif kind == "پایان":
+                break
+        step("۵. پاسخ با جریان", bool(got) and not err, (time.time() - t) * 1000,
+             f"{len(got)} نویسه، اولین در {first_ms} میلی‌ثانیه" if got else (err or "چیزی نرسید"))
+    except Exception as e:  # noqa: BLE001
+        step("۵. پاسخ با جریان", False, (time.time() - t) * 1000, f"{type(e).__name__}: {e}")
+
+    return {"ok": all(x["ok"] for x in steps), "model": used,
+            "substituted_from": want if subbed else None, "steps": steps}
+
+
 def diag() -> dict:
     """گزارش کامل وضعیت — همان چیزی که diagnose_ollama.py می‌گوید، از داخل برنامه."""
     import platform
@@ -432,12 +526,24 @@ def _chat(model: str, messages: list[dict], max_tokens: int = AI_MAX_TOKENS,
     code, txt = _http(f"{host()}/api/chat", body, timeout=OLLAMA_TIMEOUT)
     if code == 404:
         detail = _body_error(code, txt)
-        # حالت الف: سرویس قدیمی، مسیر /api/chat را ندارد → /api/generate
+        # سرویس قدیمی که /api/chat ندارد → مسیر قدیمی
         if "model" not in detail.lower():
             return _generate(model, messages, body["options"])
-        # حالت ب: مدل نصب نیست
+        # مدل نصب نیست: فهرست را تازه کن و با مدلِ موجود یک‌بار دیگر تلاش کن
+        alt, changed = pick_model(model, refresh=True)
+        if changed and alt != model:
+            body["model"] = alt
+            code, txt = _http(f"{host()}/api/chat", body, timeout=OLLAMA_TIMEOUT)
+            if code < 400:
+                data = _json_or_none(txt) or {}
+                if meta is not None:
+                    meta["done_reason"] = data.get("done_reason") or ""
+                    meta["eval_count"] = data.get("eval_count")
+                    meta["model_used"] = alt
+                return (data.get("message") or {}).get("content", "") or ""
+            detail = _body_error(code, txt)
         raise RuntimeError(f"مدل «{model}» روی این Ollama نصب نیست. "
-                           f"اجرا کنید: ollama pull {model}")
+                           f"اجرا کنید: ollama pull {model} — پاسخ Ollama: {detail[:120]}")
     if code >= 400:
         raise RuntimeError(f"Ollama کد {code} داد: {_body_error(code, txt)}")
     data = _json_or_none(txt) or {}
@@ -462,7 +568,32 @@ def _chat_stream(model: str, messages: list[dict], max_tokens: int = 700):
     first = None
     n_tok = 0
     try:
-        with _OPENER.open(req, timeout=OLLAMA_TIMEOUT) as r:
+        try:
+            resp = _OPENER.open(req, timeout=OLLAMA_TIMEOUT)
+        except _urlerr.HTTPError as e:
+            body_txt = e.read().decode("utf-8", "replace")
+            detail = _body_error(e.code, body_txt)
+            if e.code == 404 and "model" in detail.lower():
+                # همان باگ: مدل درخواستی نصب نیست → با فهرست تازه مدل دیگری بردار
+                alt, changed = pick_model(model, refresh=True)
+                if changed and alt != model:
+                    body["model"] = alt
+                    req = _urlreq.Request(
+                        f"{host()}/api/chat",
+                        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+                        method="POST", headers={
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Accept": "application/x-ndjson"})
+                    yield ("نکته", f"مدل «{model}» نصب نبود؛ با «{alt}» پاسخ می‌دهم.")
+                    resp = _OPENER.open(req, timeout=OLLAMA_TIMEOUT)
+                else:
+                    yield ("خطا", f"مدل «{model}» نصب نیست و جایگزینی پیدا نشد. "
+                                  f"اجرا کنید: ollama pull {model}")
+                    return
+            else:
+                yield ("خطا", f"Ollama کد {e.code}: {detail[:200]}")
+                return
+        with resp as r:
             for line in r:
                 line = line.strip()
                 if not line:

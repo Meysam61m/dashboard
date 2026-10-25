@@ -105,6 +105,12 @@ def ai_diag():
     return ai.diag()
 
 
+@app.get("/api/ai/selftest")
+def ai_selftest(model: str | None = None):
+    """آزمون گام‌به‌گام اتصال و پاسخ مدل."""
+    return ai.selftest(model)
+
+
 @app.get("/api/ai/ps")
 def ai_ps():
     return {"loaded": ai.ps()}
@@ -171,6 +177,8 @@ def ai_chat_stream(req: ChatReq):
                 yield _json.dumps({"t": "tok", "v": val}, ensure_ascii=False) + "\n"
             elif kind == "خطا":
                 yield _json.dumps({"t": "err", "v": val}, ensure_ascii=False) + "\n"
+            elif kind == "نکته":
+                yield _json.dumps({"t": "note", "v": val}, ensure_ascii=False) + "\n"
             else:
                 yield _json.dumps({"t": "end", "v": {**val, "model_used": used}},
                                                 ensure_ascii=False) + "\n"
