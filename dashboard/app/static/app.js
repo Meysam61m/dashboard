@@ -52,6 +52,18 @@ async function boot() {
   await checkAI();
   await loadVersion();
   document.querySelector('#diagBtn')?.addEventListener('click', showDiag);
+  const goChat = () => { location.hash = '#chat'; state.page = 'chat'; renderNav(); load(); };
+  document.querySelector('#chatBtn')?.addEventListener('click', goChat);
+  document.querySelector('#topChat')?.addEventListener('click', goChat);
+  const tm = document.querySelector('#topChatModel');
+  if (tm && state.ai) {
+    const ok = state.ai.installed || {};
+    tm.innerHTML = '<option value="">مدل: خودکار</option>' + ['analysis','chat','deep']
+      .filter(k => state.ai.configured?.[k])
+      .map(k => `<option value="${esc(state.ai.configured[k])}"${ok[k] ? '' : ' disabled'}>${esc(state.ai.configured[k])}${ok[k] ? '' : ' (نصب نیست)'}</option>`)
+      .join('');
+  }
+  document.querySelector('#topDiag')?.addEventListener('click', showDiag);
   const fromHash = (location.hash || '').replace('#', '');
   if (fromHash && PAGES.some(p => p.k === fromHash)) {
     state.page = fromHash;

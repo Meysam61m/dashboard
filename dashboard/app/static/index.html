@@ -20,6 +20,7 @@
     <div class="ai-badge" id="aiBadge">
       <b>هوش مصنوعی محلی</b>
       <span id="aiState">در حال بررسی…</span>
+      <button class="diag-btn chat-btn" id="chatBtn" title="گفت‌وگو با مدل و آزمودن اتصال">گفت‌وگو با مدل</button>
       <button class="diag-btn" id="diagBtn" title="عیب‌یابی اتصال">عیب‌یابی</button>
     </div>
   </aside>
@@ -34,6 +35,13 @@
       <div class="ctrl"><label>شعبه</label><select id="selBranch"></select></div>
       <div class="ctrl"><label>دوره</label><select id="selPeriod"></select></div>
       <div class="ctrl"><label>سال</label><select id="selYear"></select></div>
+      <div class="ctrl"><label>مدل</label>
+        <select id="topChatModel" class="btn" style="padding:7px 10px;min-width:120px">
+          <option value="">Ollama</option>
+        </select>
+      </div>
+      <button class="topbtn" id="topChat" title="گفت‌وگو با مدل محلی">گفت‌وگو با مدل</button>
+      <button class="topbtn" id="topDiag" title="عیب‌یابی اتصال">عیب‌یابی</button>
     </div>
     <div class="content" id="content"></div>
   </main>

@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import Request, FastAPI, File, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -20,7 +20,16 @@ from .seed import seed
 
 app = FastAPI(title="داشبورد مدیریتی مجتمع خراسان", docs_url="/api/docs")
 STATIC = Path(__file__).parent / "static"
-app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
+class NoCacheStatic(StaticFiles):
+    """بدون no-cache، مرورگر app.js قدیمی را نگه می‌دارد و نسخهٔ تازه دیده نمی‌شود."""
+    async def get_response(self, path, scope):
+        resp = await super().get_response(path, scope)
+        if path.endswith((".js", ".css", ".html")):
+            resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return resp
+
+
+app.mount("/static", NoCacheStatic(directory=str(STATIC)), name="static")
 
 
 @app.on_event("startup")
@@ -34,7 +43,13 @@ def _startup():
 # ── صفحات
 @app.get("/")
 def index():
-    return FileResponse(STATIC / "index.html")
+    """HTML صفحه با شمارهٔ نسخه در آدرس فایل‌های استاتیک.
+    بدون این، مرورگر app.js قدیمی را از حافظه می‌خواند و تغییرات دیده نمی‌شود."""
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    html = html.replace("/static/styles.css", f"/static/styles.css?v={APP_VERSION}")
+    html = html.replace("/static/app.js", f"/static/app.js?v={APP_VERSION}")
+    html = html.replace("%%VERSION%%", APP_VERSION)
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache, must-revalidate"})
 
 
 @app.get("/api/meta")
