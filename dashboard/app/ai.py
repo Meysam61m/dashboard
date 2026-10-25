@@ -343,6 +343,71 @@ def warmup(model: str | None = None) -> dict:
         return {"ok": False, "model": m, "error": f"{type(e).__name__}: {e}"}
 
 
+GARBAGE = ("ناقص", "نامشخص", "خطا", "متأسف", "نمی‌توانم", "-", "…", "...")
+
+
+def _quality(payload: dict) -> tuple[bool, str]:
+    """آیا این خروجی واقعاً یک تحلیل است، یا بازماندهٔ JSON بریده؟"""
+    if not isinstance(payload, dict):
+        return False, "خروجی شیء JSON نبود"
+    head = str(payload.get("headline") or "").strip()
+    if not head:
+        return False, "تیتر خالی بود"
+    if len(head) < 12 or head in GARBAGE:
+        return False, f"تیتر بی‌معنی یا ناقص: «{head[:30]}»"
+    # فقط اگر «واژهٔ آخر» یک حرف ربط باشد، نه اینکه واژه به آن ختم شود
+    # (مثال: «شعبه» به «به» ختم می‌شود ولی کامل است)
+    if head.endswith(("،", "؛", ":")):
+        return False, "تیتر با علامت ناتمام تمام شد"
+    last_word = head.split()[-1] if head.split() else ""
+    if last_word in {"و", "از", "به", "در", "با", "که", "تا", "بر", "یا"}:
+        return False, "تیتر وسط جمله بریده شد"
+    items = 0
+    for k in ("findings", "drivers", "risks", "actions", "data_gaps"):
+        v = payload.get(k)
+        if isinstance(v, list):
+            items += sum(1 for x in v if (str(x.get("text") or x.get("kpi") or "").strip()
+                                          if isinstance(x, dict) else str(x).strip()))
+    if items == 0 and len(head) < 25:
+        return False, "هیچ یافته یا نکته‌ای نداشت"
+    return True, ""
+
+
+def ask_json(model: str, system: str, user: str, max_tokens: int,
+             tries: list | None = None) -> tuple[dict, str]:
+    """پاسخ JSON با سه لایهٔ تلاش و دروازهٔ کیفیت.
+
+    خروجی: (payload, علتِ خطای آخر) — اگر payload خالی باشد، تحلیل باید قاعده‌محور شود.
+    """
+    plans = tries or [
+        (max_tokens, True),                    # ۱) معمولی
+        (min(max_tokens * 2, 2400), True),     # ۲) سقف بیشتر (مدل استدلالی فرصت کند)
+        (min(max_tokens * 2, 2400), False),    # ۳) بدون format=json، از متن بیرون بکش
+    ]
+    last = "پاسخ مدل JSON معتبر نبود"
+    raw = ""
+    for n, (budget, json_mode) in enumerate(plans, 1):
+        m: dict = {}
+        try:
+            raw = _chat(model, [{"role": "system", "content": system},
+                                {"role": "user", "content": user}],
+                        max_tokens=budget, json_mode=json_mode, meta=m)
+        except Exception as e:  # noqa: BLE001
+            last = f"{type(e).__name__}: {str(e)[:160]}"
+            continue
+        payload = _parse_json(raw)
+        if payload is None:
+            last = (f"تلاش {n}: JSON نامعتبر (توکن {m.get('eval_count')}، "
+                    f"thinking {m.get('thinking_len')}، content {m.get('content_len')})")
+            continue
+        payload = _normalize(payload)
+        ok, why = _quality(payload)
+        if ok:
+            return payload, ""
+        last = f"تلاش {n}: {why}"
+    return {}, last
+
+
 def _hint_empty(m: dict) -> str:
     """برای پاسخ خالی، حدسِ مبتنی بر داده بده — نه حدسِ دلبخواه."""
     think = m.get("thinking_len") or 0
@@ -608,6 +673,12 @@ def _content_of(data: dict, meta: dict | None = None) -> str:
         meta["thinking_len"] = len(thinking)
         meta["content_len"] = len(content)
         meta["raw"] = {k: v for k, v in data.items() if k != "message"}
+
+    # نشت thinking به ابتدای content (در حالت format=json رخ می‌دهد)
+    if content.strip() and thinking.strip():
+        head = thinking.strip()[:40]
+        if head and content.lstrip().startswith(head):
+            content = content.lstrip()[len(head):].lstrip()
 
     if content.strip():
         return content
@@ -916,31 +987,10 @@ def analyze(conn, scope_key: str, scope_label: str, bundle: dict,
     payload = None
     raw = ""
     try:
-        meta: dict = {}
-        raw = _chat(model, [{"role": "system", "content": SYSTEM_PROMPT},
-                            {"role": "user", "content": user_msg}], meta=meta)
-        payload = _parse_json(raw)
-
-        # تلاش دوم: پاسخ ناقص بود یا JSON خراب درآمد
-        if payload is None:
-            note = ("پاسخ قبلی ناقص بود و کامل نشد. " if meta.get("done_reason") == "length"
-                    else "پاسخ قبلی JSON معتبر نبود. ")
-            raw_meta: dict = {}
-            raw = _chat(model, [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_msg},
-                {"role": "assistant", "content": (raw or "")[:1500]},
-                {"role": "user", "content":
-                    note + "فقط یک شیء JSON معتبر و کامل بنویس. کوتاه: حداکثر ۲ مورد در هر فهرست. "
-                           "بدون هیچ متن اضافه."},
-            ], max_tokens=min(1200, AI_MAX_TOKENS + 300), meta=raw_meta)
-            payload = _parse_json(raw)
-            meta = raw_meta
-
-        if payload is None:
-            raise ValueError("پاسخ مدل JSON معتبر نبود"
-                             + (f" (پاسخ خام: {raw[:200]}…)" if raw else ""))
-        payload = _normalize(payload)
+        payload, why = ask_json(model, SYSTEM_PROMPT, user_msg, AI_MAX_TOKENS)
+        raw = why
+        if not payload:
+            raise ValueError(why or "پاسخ مدل JSON معتبر نبود")
 
         v = validate_numbers(_all_texts(payload), allowed, raw_values)
         # یک تلاش اصلاحی در صورت وجود عدد ناشناخته
@@ -1000,20 +1050,11 @@ def quick(conn, scope_key: str, scope_label: str, bundle: dict,
             + "\n\nتحلیل کوتاه را در قالب JSON بنویس.")
 
     t0 = time.time()
-    raw = ""
+    payload, why = ask_json(used, SHORT_PROMPT, user, 420)
+    raw = why
     try:
-        meta: dict = {}
-        raw = _chat(used, [{"role": "system", "content": SHORT_PROMPT},
-                           {"role": "user", "content": user}], max_tokens=420, meta=meta)
-        payload = _parse_json(raw)
-        if payload is None and meta.get("done_reason") == "length":
-            raw = _chat(used, [{"role": "system", "content": SHORT_PROMPT},
-                               {"role": "user", "content": user + "\nفقط یک جمله بنویس."}],
-                        max_tokens=260, meta=meta)
-            payload = _parse_json(raw)
-        if payload is None:
-            raise ValueError("پاسخ مدل JSON معتبر نبود")
-        payload = _normalize(payload)
+        if not payload:
+            raise ValueError(why or "پاسخ مدل JSON معتبر نبود")
         v = validate_numbers(_all_texts(payload), allowed, vals)
         return {"status": "ok", "source": "ollama", "model": used,
                 "model_requested": want, "model_notice": notice, "mode": "quick",
