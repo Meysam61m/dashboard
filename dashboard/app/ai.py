@@ -343,6 +343,22 @@ def warmup(model: str | None = None) -> dict:
         return {"ok": False, "model": m, "error": f"{type(e).__name__}: {e}"}
 
 
+def _hint_empty(m: dict) -> str:
+    """برای پاسخ خالی، حدسِ مبتنی بر داده بده — نه حدسِ دلبخواه."""
+    think = m.get("thinking_len") or 0
+    ec = m.get("eval_count") or 0
+    dr = m.get("done_reason") or ""
+    if think > 0 and (m.get("content_len") or 0) == 0:
+        return ("مدل تمام توکن‌ها را صرف فکر کردن کرد. سقف توکن را بالا ببرید: "
+                "AI_MAX_TOKENS=2000 (متغیر محیطی) یا در فایل app/config.py مقدار را بیشتر کنید.")
+    if dr == "length":
+        return ("سقف توکن پیش از تولید متن تمام شد. AI_MAX_TOKENS را بیشتر کنید.")
+    if ec == 0:
+        return ("مدل هیچ توکنی تولید نکرد. Ollama را ری‌استارت کنید و دوباره بیازمايید: "
+                "ollama stop " + str(m.get("model") or "qwen3.5:9b"))
+    return "پاسخ خالی بود بدون علت مشخص. خروجی خام را در بخش پایین ببینید."
+
+
 def selftest(model: str | None = None) -> dict:
     """آزمون گام‌به‌گام با زمان هر مرحله. دقیقاً می‌گوید کجا شکست خورد."""
     steps = []
@@ -384,17 +400,30 @@ def selftest(model: str | None = None) -> dict:
         return {"ok": False, "steps": steps,
                 "hint": f"هیچ مدلی نصب نیست. اجرا کنید: ollama pull {MODEL_ANALYSIS}"}
 
-    # ۴) پرسش بدون جریان
+    # ۴) پرسش بدون جریان — گزارش کامل اگر خالی برگشت
     t = time.time()
+    m4: dict = {}
     try:
         out = _chat(used, [{"role": "user", "content": "فقط بنویس: سلام"}],
-                    max_tokens=16, json_mode=False)
+                    max_tokens=64, json_mode=False, meta=m4)
         ok4 = bool(out.strip())
-        step("۴. پاسخ ساده (بدون جریان)", ok4, (time.time() - t) * 1000,
-             f"«{out.strip()[:60]}»" if ok4 else "پاسخ خالی برگشت")
+        if ok4:
+            det = f"«{out.strip()[:60]}»"
+            if m4.get("used_thinking"):
+                det += "  (پاسخ از فیلد thinking گرفته شد — Ollama را به‌روزرسانی کنید)"
+        else:
+            det = ("پاسخ خالی برگشت — "
+                   f"توکن تولیدشده: {m4.get('eval_count')} | "
+                   f"علت پایان: {m4.get('done_reason') or 'نامشخص'} | "
+                   f"طول thinking: {m4.get('thinking_len', 0)} | "
+                   f"طول content: {m4.get('content_len', 0)}")
+        step("۴. پاسخ ساده (بدون جریان)", ok4, (time.time() - t) * 1000, det)
+        if not ok4:
+            return {"ok": False, "steps": steps, "model": used, "meta4": m4,
+                    "hint": _hint_empty(m4)}
     except Exception as e:  # noqa: BLE001
         step("۴. پاسخ ساده (بدون جریان)", False, (time.time() - t) * 1000,
-             f"{type(e).__name__}: {str(e)[:160]}")
+             f"{type(e).__name__}: {str(e)[:200]}")
         return {"ok": False, "steps": steps, "model": used}
 
     # ۵) پرسش با جریان
@@ -419,8 +448,13 @@ def selftest(model: str | None = None) -> dict:
     except Exception as e:  # noqa: BLE001
         step("۵. پاسخ با جریان", False, (time.time() - t) * 1000, f"{type(e).__name__}: {e}")
 
+    notes = []
+    if m4.get("used_thinking"):
+        notes.append("مدل متن را در فیلد thinking داد، نه content — نسخهٔ Ollama قدیمی است "
+                     "(think را نمی‌شناسد). به‌روزرسانی از ollama.com/download توصیه می‌شود.")
     return {"ok": all(x["ok"] for x in steps), "model": used,
-            "substituted_from": want if subbed else None, "steps": steps}
+            "substituted_from": want if subbed else None, "steps": steps,
+            "notes": notes}
 
 
 def diag() -> dict:
@@ -508,28 +542,40 @@ def _body_error(code: int, txt: str) -> str:
 
 def _chat(model: str, messages: list[dict], max_tokens: int = AI_MAX_TOKENS,
           meta: dict | None = None, json_mode: bool = True) -> str:
-    """متن پاسخ. اگر meta داده شود، علت پایان تولید (length = بریدگی) در آن نوشته می‌شود."""
+    """متن پاسخ مدل.
+
+    مدل‌های استدلالی (مثل qwen3.5) توکن‌های اول را صرف «فکر کردن» می‌کنند و آن را
+    در فیلد thinking برمی‌گردانند، نه content. دو کار لازم است:
+      ۱. think=false بفرستیم تا مستقیم جواب بدهد
+      ۲. اگر باز هم content خالی بود، از thinking استفاده کنیم
+    """
     body = {
         "model": model,
         "messages": messages,
         "stream": False,
         "keep_alive": OLLAMA_KEEP_ALIVE,
+        "think": False,              # مدل استدلالی مستقیم پاسخ بدهد
         "options": {
             "temperature": AI_TEMPERATURE,
             "num_predict": max_tokens,
-            "num_ctx": 8192,          # پنجرهٔ کوچک: روی CPU سریع‌تر و کم‌مصرف‌تر
+            "num_ctx": 8192,
             "top_p": 0.9,
         },
     }
     if json_mode:
         body["format"] = "json"
+
     code, txt = _http(f"{host()}/api/chat", body, timeout=OLLAMA_TIMEOUT)
+
+    # نسخه‌ای از Ollama که «think» را نمی‌شناسد → بدون آن دوباره
+    if code == 400 and "think" in (txt or "").lower():
+        body.pop("think", None)
+        code, txt = _http(f"{host()}/api/chat", body, timeout=OLLAMA_TIMEOUT)
+
     if code == 404:
         detail = _body_error(code, txt)
-        # سرویس قدیمی که /api/chat ندارد → مسیر قدیمی
         if "model" not in detail.lower():
-            return _generate(model, messages, body["options"])
-        # مدل نصب نیست: فهرست را تازه کن و با مدلِ موجود یک‌بار دیگر تلاش کن
+            return _generate(model, messages, body.get("options", {}))
         alt, changed = pick_model(model, refresh=True)
         if changed and alt != model:
             body["model"] = alt
@@ -537,20 +583,41 @@ def _chat(model: str, messages: list[dict], max_tokens: int = AI_MAX_TOKENS,
             if code < 400:
                 data = _json_or_none(txt) or {}
                 if meta is not None:
-                    meta["done_reason"] = data.get("done_reason") or ""
-                    meta["eval_count"] = data.get("eval_count")
                     meta["model_used"] = alt
-                return (data.get("message") or {}).get("content", "") or ""
+                return _content_of(data, meta)
             detail = _body_error(code, txt)
         raise RuntimeError(f"مدل «{model}» روی این Ollama نصب نیست. "
                            f"اجرا کنید: ollama pull {model} — پاسخ Ollama: {detail[:120]}")
+
     if code >= 400:
         raise RuntimeError(f"Ollama کد {code} داد: {_body_error(code, txt)}")
+
     data = _json_or_none(txt) or {}
+    return _content_of(data, meta)
+
+
+def _content_of(data: dict, meta: dict | None = None) -> str:
+    """متن پاسخ را بیرون می‌کشد؛ اگر content خالی بود، thinking را برمی‌گرداند."""
+    msg = data.get("message") or {}
+    content = msg.get("content") or ""
+    thinking = msg.get("thinking") or data.get("thinking") or ""
+
     if meta is not None:
         meta["done_reason"] = data.get("done_reason") or ""
         meta["eval_count"] = data.get("eval_count")
-    return (data.get("message") or {}).get("content", "") or ""
+        meta["thinking_len"] = len(thinking)
+        meta["content_len"] = len(content)
+        meta["raw"] = {k: v for k, v in data.items() if k != "message"}
+
+    if content.strip():
+        return content
+
+    # مدل همهٔ توکن‌ها را صرف فکر کردن کرد (سقف توکن کم بود)
+    if thinking.strip():
+        if meta is not None:
+            meta["used_thinking"] = True
+        return thinking
+    return ""
 
 
 def _chat_stream(model: str, messages: list[dict], max_tokens: int = 700):
@@ -558,6 +625,7 @@ def _chat_stream(model: str, messages: list[dict], max_tokens: int = 700):
     body = {
         "model": model, "messages": messages, "stream": True,
         "keep_alive": OLLAMA_KEEP_ALIVE,
+        "think": False,
         "options": {"temperature": 0.3, "num_predict": max_tokens, "num_ctx": 8192},
     }
     data = json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -604,7 +672,10 @@ def _chat_stream(model: str, messages: list[dict], max_tokens: int = 700):
                 if j.get("error"):
                     yield ("خطا", str(j["error"]))
                     return
-                piece = (j.get("message") or {}).get("content", "")
+                msg = j.get("message") or {}
+                piece = msg.get("content") or ""
+                if not piece:
+                    piece = msg.get("thinking") or ""     # مدل استدلالی
                 if piece:
                     if first is None:
                         first = (time.time() - t0) * 1000

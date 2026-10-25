@@ -739,6 +739,7 @@ async function runSelfTest() {
       (r.ok ? 'همه‌چیز سالم است. مدل: ' + r.model : 'این مرحله شکست خورد:') +
       '\n\n' + lines +
       (r.hint ? '\n\nراه‌حل: ' + r.hint : '') +
+      ((r.notes || []).length ? '\n\nیادداشت: ' + r.notes.join('\n') : '') +
       (r.substituted_from ? `\n\n(مدل درخواستی ${r.substituted_from} نبود؛ با ${r.model} آزموده شد)` : ''));
   } catch (e) {
     clearInterval(iv);
